@@ -4,7 +4,7 @@ import { getRadarPosition, playerColors } from "../utilities/utilities";
 
 let playerRotations = [];
 const calculatePlayerRotation = (playerData) => {
-  const playerViewAngle = 90 - playerData.m_eye_angle;
+  const playerViewAngle = 270 - playerData.m_eye_angle;
   const idx = playerData.m_idx;
 
   playerRotations[idx] = (playerRotations[idx] || 0) % 360;
@@ -107,7 +107,7 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
               left: "50%", top: "50%",
               width: `${scaledSize * 1.5}px`,
               height: `${scaledSize * 3}px`,
-              transform: `translate(-50%, -100%)`,
+              transform: `translate(-50%, 0%)`,
               clipPath: "polygon(50% 0%, 0% 100%, 100% 100%)",
             }}
           />

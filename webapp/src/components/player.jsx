@@ -69,8 +69,8 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
       }}
     >
       {/* Name above the dot - outside rotation container */}
-      {(settings.showAllNames && playerData.m_team === localTeam) ||
-        (settings.showEnemyNames && playerData.m_team !== localTeam) ? (
+      {((settings.showAllNames ?? false) && playerData.m_team === localTeam) ||
+        ((settings.showEnemyNames ?? true) && playerData.m_team !== localTeam) ? (
         <div className="absolute bottom-full left-1/2 -translate-x-1/2 -translate-y-1 text-center">
           <span className="text-xs text-white whitespace-nowrap max-w-[80px] inline-block overflow-hidden text-ellipsis">
             {playerData.m_name}

@@ -44,12 +44,26 @@ const DEFAULT_SETTINGS = {
   bombColor: "#ff4500",
   bombHighlight: true,
   showDeathCross: true,
+  autoUpdate: true,
 };
 
+// Always merge saved settings with defaults so new keys are never undefined
 const loadSettings = () => {
-  const savedSettings = localStorage.getItem("radarSettings");
-  return savedSettings ? JSON.parse(savedSettings) : DEFAULT_SETTINGS;
+  try {
+    const saved = localStorage.getItem("radarSettings");
+    return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
 };
+
+// Module-level WS ref so settings panels can send messages to the Python backend
+let _backendWs = null;
+function sendToBackend(data) {
+  if (_backendWs && _backendWs.readyState === WebSocket.OPEN) {
+    _backendWs.send(JSON.stringify(data));
+  }
+}
 
 // ── Settings popup for overlay mode ──────────────────────────────────────────
 // Custom toggle — no <input type="checkbox"> to avoid React controlled-input
@@ -129,6 +143,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       <SettingRow label="Callouts"    checked={!!settings.showCallouts}   onToggle={() => toggle("showCallouts")} />
       <SettingRow label="Death Cross" checked={!!settings.showDeathCross} onToggle={() => toggle("showDeathCross")} />
       <SettingRow label="Bomb Pulse"  checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />
+      <SettingRow label="Auto Update" checked={!!(settings.autoUpdate ?? true)} onToggle={() => toggle("autoUpdate")} />
 
       {/* Bomb color */}
       <div style={{ marginTop:8 }}>
@@ -234,9 +249,10 @@ const App = () => {
   const [bannerOpened, setBannerOpened] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Save settings to local storage whenever they change
+  // Persist settings and sync auto-update preference to backend
   useEffect(() => {
     localStorage.setItem("radarSettings", JSON.stringify(settings));
+    sendToBackend({ type: "set_auto_update", value: !!(settings.autoUpdate ?? true) });
   }, [settings]);
 
   useEffect(() => {
@@ -253,6 +269,7 @@ const App = () => {
       if (!alive) return;
       try {
         ws = new WebSocket(wsUrl);
+        _backendWs = ws;
       } catch (e) {
         console.error("WS init failed:", e);
         retryTimer = setTimeout(connect, 3000);

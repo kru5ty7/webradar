@@ -34,7 +34,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='GameOverlayService_v12',
+    name='GameOverlayService',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

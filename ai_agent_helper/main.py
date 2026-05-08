@@ -24,6 +24,14 @@ except ImportError:
     print("[error] websockets not installed. Run: pip install websockets")
     sys.exit(1)
 
+try:
+    from version import VERSION
+except ImportError:
+    VERSION = "v12"
+
+GITHUB_REPO = "kru5ty7/webradar"
+GITHUB_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
 # ── config ────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
 CONFIG_FILE = ROOT / "config.json"
@@ -921,11 +929,92 @@ class CS2Reader:
 
 # ── config ───────────────────────────────────────────────────────────────────
 def load_config() -> dict:
+    default = {
+        "m_use_localhost": True,
+        "m_local_ip": "localhost",
+        "m_public_ip": "",
+        "auto_update": True,
+        "github_token": "",
+    }
     if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text())
-    default = {"m_use_localhost": True, "m_local_ip": "localhost", "m_public_ip": ""}
+        saved = json.loads(CONFIG_FILE.read_text())
+        return {**default, **saved}
     CONFIG_FILE.write_text(json.dumps(default, indent=2))
     return default
+
+
+def _check_for_update(config: dict) -> None:
+    """On startup: check GitHub for a newer release and self-update if auto_update is on."""
+    if not config.get("auto_update", True):
+        log.info("auto-update disabled")
+        return
+
+    token = config.get("github_token", "")
+    headers = {
+        "User-Agent":  "cs2-radar/updater",
+        "Accept":      "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        req = urllib.request.Request(GITHUB_API, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            release = json.loads(r.read())
+    except Exception as exc:
+        log.debug("update check skipped: %s", exc)
+        return
+
+    latest_tag = release.get("tag_name", "")
+    if not latest_tag or latest_tag <= VERSION:
+        log.info("up to date (%s)", VERSION)
+        return
+
+    print(f"\n  Update available: {VERSION} -> {latest_tag}")
+
+    if not getattr(sys, "frozen", False):
+        log.info("(dev mode — skipping auto-download)")
+        return
+
+    assets    = release.get("assets", [])
+    exe_asset = next((a for a in assets if a["name"].lower().endswith(".exe")), None)
+    if not exe_asset:
+        log.warning("update: no .exe found in release %s", latest_tag)
+        return
+
+    print(f"  Downloading {exe_asset['name']} ({exe_asset['size'] // 1024 // 1024} MB)...")
+    exe_path = Path(sys.executable)
+    new_path  = exe_path.with_name("_update_new.exe")
+
+    try:
+        dl_headers = dict(headers)
+        dl_headers["Accept"] = "application/octet-stream"
+        dl_req = urllib.request.Request(exe_asset["browser_download_url"], headers=dl_headers)
+        with urllib.request.urlopen(dl_req, timeout=180) as r:
+            new_path.write_bytes(r.read())
+    except Exception as exc:
+        log.warning("update download failed: %s", exc)
+        try:
+            new_path.unlink()
+        except Exception:
+            pass
+        return
+
+    bat = exe_path.parent / "_update.bat"
+    bat.write_text(
+        "@echo off\n"
+        "timeout /t 2 /nobreak >nul\n"
+        f'move /y "{new_path}" "{exe_path}" >nul\n'
+        f'start "" "{exe_path}"\n'
+        "del \"%~f0\"\n",
+        encoding="utf-8",
+    )
+
+    print(f"  Restarting to apply {latest_tag}...\n")
+    import subprocess
+    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW)
+    sys.exit(0)
 
 
 # ── connected browser clients ─────────────────────────────────────────────────
@@ -936,7 +1025,18 @@ async def _ws_handler(websocket):
     _clients.add(websocket)
     log.info("browser connected  (%d total)", len(_clients))
     try:
-        await websocket.wait_closed()
+        async for msg in websocket:
+            try:
+                data = json.loads(msg)
+                if data.get("type") == "set_auto_update":
+                    cfg = load_config()
+                    cfg["auto_update"] = bool(data.get("value", True))
+                    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+                    log.info("auto-update -> %s", cfg["auto_update"])
+            except Exception:
+                pass
+    except Exception:
+        pass
     finally:
         _clients.discard(websocket)
         log.info("browser disconnected (%d total)", len(_clients))
@@ -1349,6 +1449,8 @@ if __name__ == "__main__":
     ap.add_argument("--overlay", action="store_true", help="Small draggable minimap overlay")
     ap.add_argument("--esp",     action="store_true", help="Full-screen ESP overlay")
     args = ap.parse_args()
+
+    _check_for_update(load_config())
 
     if args.esp:
         _overlay, _esp = False, True

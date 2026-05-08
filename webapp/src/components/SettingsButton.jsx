@@ -89,6 +89,7 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
               <Toggle label="Map Callouts" checked={!!(settings.showCallouts ?? true)} onToggle={() => toggle("showCallouts")} />
               <Toggle label="Death Cross"  checked={!!(settings.showDeathCross ?? true)} onToggle={() => toggle("showDeathCross")} />
               <Toggle label="Bomb Pulse"   checked={!!(settings.bombHighlight ?? true)}  onToggle={() => toggle("bombHighlight")} />
+              <Toggle label="Auto Update"  checked={!!(settings.autoUpdate ?? true)}     onToggle={() => toggle("autoUpdate")} />
             </div>
 
             {/* Bomb color */}

@@ -4,7 +4,7 @@ import { getRadarPosition, playerColors } from "../utilities/utilities";
 
 let playerRotations = [];
 const calculatePlayerRotation = (playerData) => {
-  const playerViewAngle = 270 - playerData.m_eye_angle;
+  const playerViewAngle = 90 - playerData.m_eye_angle;
   const idx = playerData.m_idx;
 
   playerRotations[idx] = (playerRotations[idx] || 0) % 360;

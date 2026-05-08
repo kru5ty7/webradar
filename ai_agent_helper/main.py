@@ -510,6 +510,16 @@ class CS2Reader:
         self._bomb_own_idx    = 0   # persisted across frames
         self._last_local_team = 0   # last known valid team (2=T, 3=CT)
 
+    def _read_utl_string(self, address: int) -> str:
+        """Read a CS2 CUtlString — tries ptr at +0 then ptr at +8."""
+        for delta in (0, 8):
+            ptr = self.mem.ptr(address + delta)
+            if ptr:
+                s = self.mem.cstring(ptr)
+                if s:
+                    return s
+        return ""
+
     def _off(self, cls: str, field: str, default: int = 0) -> int:
         return self._f.get(cls, {}).get(field, default)
 
@@ -767,7 +777,7 @@ class CS2Reader:
                 steam_id = self.mem.u64(ent + off_steam) if off_steam else 0
                 armor    = self.mem.i32(pawn + off_armor) if off_armor else 0
 
-                pname = self.mem.string_field(ent + off_name) if off_name else ""
+                pname = self._read_utl_string(ent + off_name) if off_name else ""
 
                 color = 5
                 if off_color:

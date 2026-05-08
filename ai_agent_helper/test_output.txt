@@ -1,0 +1,31 @@
+﻿20:49:53  [32mINFO    [0m  mode: browser
+20:49:53  [32mINFO    [0m  firewall: program rule added for F:\Apps\python.exe
+20:49:53  [32mINFO    [0m  firewall: port rule added  CS2Radar-WS -> 22006
+20:49:53  [32mINFO    [0m  firewall: port rule added  CS2Radar-HTTP -> 8765
+20:49:53  [32mINFO    [0m  using cached offsets (122s old)
+20:49:53  [32mINFO    [0m  WS    -> ws://localhost:22006/cs2_webradar
+20:49:53  [32mINFO    [0m  map extractor: CS2 found at D:\Steam\steamapps\common\Counter-Strike Global Offensive
+20:49:54  [32mINFO    [0m  HTTP  -> http://0.0.0.0:8765  (maps_cache=F:\workspace\cs2_webradar\webapp\public\data)
+20:49:54  [32mINFO    [0m  found cs2.exe  pid=19352
+20:49:54  [36mDEBUG   [0m  dwEntityList=0x24D0DC0  dwGlobalVars=0x204B5D8  dwLocalPlayerController=0x230A4F0
+20:49:54  [32mINFO    [0m  client.dll    @ 0x00007FF8238F0000
+20:49:54  [32mINFO    [0m  entity system @ 0x000004A159597000
+20:49:54  [32mINFO    [0m  global vars   @ 0x000004A1C56A0090
+20:49:54  [32mINFO    [0m  reader ready ΓÇö watching entity list at 10 Hz
+20:49:54  [32mINFO    [0m  in CS2 but not in an active match (team=spectator/none)
+20:49:55  [32mINFO    [0m  browser connected  (1 total)
+20:49:59  [32mINFO    [0m  in CS2 but not in an active match (team=spectator/none)
+20:50:04  [32mINFO    [0m  in CS2 but not in an active match (team=spectator/none)
+20:50:09  [32mINFO    [0m  in CS2 but not in an active match (team=spectator/none)
+20:50:14  [32mINFO    [0m  in CS2 but not in an active match (team=spectator/none)
+20:50:19  [32mINFO    [0m  in CS2 but not in an active match (team=spectator/none)
+20:50:27  [32mINFO    [0m  browser disconnected (0 total)
+20:50:27  [32mINFO    [0m  browser connected  (1 total)
+20:50:28  [32mINFO    [0m  browser disconnected (0 total)
+python : ----------------------------------------
+At line:1 char:49
++ ... e\cs2_webradar\ai_agent_helper'; python main.py --normal 2>&1 | Selec ...
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (----------------------------------------:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

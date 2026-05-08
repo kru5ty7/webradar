@@ -1,0 +1,77 @@
+# ========================
+# Project-specific ignores
+# ========================
+kernelmode/
+usermode/src/driver/driver.hpp
+
+# ========================
+# Visual Studio / C++
+# ========================
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+ipch/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+[Oo]ut/
+bld/
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+_ReSharper*/
+*.DotSettings.user
+
+# ========================
+# Node.js / Webapp
+# ========================
+node_modules/
+webapp/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.local
+.env.*.local
+
+# ========================
+# Python / ai_agent_helper
+# ========================
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# PyInstaller build artefacts
+ai_agent_helper/build/
+ai_agent_helper/dist/
+ai_agent_helper/*.spec.bak
+
+# Runtime files (regenerated on each run)
+ai_agent_helper/offsets_cache.json
+ai_agent_helper/radar.log
+ai_agent_helper/config.json
+
+# ========================
+# OS generated files
+# ========================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.swp
+*~

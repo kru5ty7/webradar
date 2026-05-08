@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import "./App.css";
 import PlayerCard from "./components/PlayerCard";
 import Radar from "./components/Radar";
-import ESP from "./components/ESP";
 import { getLatency, Latency } from "./components/latency";
 import MaskedIcon from "./components/maskedicon";
 
@@ -23,13 +22,12 @@ const NGROK_WS_URL = import.meta.env.VITE_WS_URL || null;
 
 const EFFECTIVE_IP = USE_LOCALHOST ? "localhost" : window.location.hostname;
 
-// True when running inside any pywebview window (WebView2 host)
-const IS_OVERLAY = !!(window.chrome?.webview);
-
-// Which overlay mode was requested — read from ?mode= URL param
+// Detect mode from URL param — reliable across all pywebview/browser combos
 const _urlMode   = new URLSearchParams(window.location.search).get("mode");
-const IS_ESP     = IS_OVERLAY && _urlMode === "esp";
-const IS_MINIMAP = IS_OVERLAY && _urlMode !== "esp";
+const IS_ESP     = _urlMode === "esp";
+const IS_MINIMAP = _urlMode === "minimap";
+const IS_OVERLAY = IS_ESP || IS_MINIMAP;
+
 
 const DEFAULT_SETTINGS = {
   dotSize: 1,
@@ -245,7 +243,6 @@ const App = () => {
   const [grenades, setGrenades] = useState([]);
   const [dropped, setDropped]   = useState([]);
   const [settings, setSettings] = useState(loadSettings());
-  const [viewMatrix, setViewMatrix] = useState([]);
   const [bannerOpened, setBannerOpened] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -294,7 +291,6 @@ const App = () => {
         setBombData(parsedData.m_bomb);
         setGrenades(parsedData.m_grenades || []);
         setDropped(parsedData.m_dropped   || []);
-        setViewMatrix(parsedData.m_view_matrix || []);
 
         const map = parsedData.m_map;
         if (map !== "invalid") {
@@ -323,35 +319,7 @@ const App = () => {
     };
   }, []);
 
-  // ── ESP mode — full-screen transparent, click-through ────────────────────
-  if (IS_ESP) {
-    return (
-      <div style={{ width: "100vw", height: "100vh", background: "transparent" }}>
-        <ESP
-          playerArray={playerArray}
-          localTeam={localTeam}
-          viewMatrix={viewMatrix}
-        />
-        {/* Bomb timer HUD */}
-        {bombData && bombData.m_blow_time > 0 && !bombData.m_is_defused && (
-          <div style={{
-            position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)",
-            display: "flex", alignItems: "center", gap: 6,
-            background: "rgba(0,0,0,0.6)", borderRadius: 6, padding: "4px 12px",
-            color: "#fff", fontFamily: "monospace", fontSize: 18, zIndex: 9999,
-            pointerEvents: "none",
-          }}>
-            <MaskedIcon path="./assets/icons/c4_sml.png" height={22}
-              color={bombData.m_is_defusing ? "bg-radar-green" : "bg-radar-secondary"} />
-            <span>
-              {bombData.m_blow_time.toFixed(1)}s
-              {bombData.m_is_defusing && ` (${bombData.m_defuse_time.toFixed(1)}s)`}
-            </span>
-          </div>
-        )}
-      </div>
-    );
-  }
+
 
   // ── Minimap overlay mode ──────────────────────────────────────────────────
   if (IS_MINIMAP) {

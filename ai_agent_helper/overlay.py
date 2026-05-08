@@ -10,11 +10,12 @@ import time
 log = logging.getLogger("radar")
 
 # Win32 constants
-GWL_EXSTYLE   = -20
-WS_EX_LAYERED = 0x00080000
-SWP_NOSIZE    = 0x0001
-SWP_NOZORDER  = 0x0004
-HWND_TOPMOST  = -1
+GWL_EXSTYLE        = -20
+WS_EX_LAYERED      = 0x00080000
+WS_EX_TRANSPARENT  = 0x00000020
+SWP_NOSIZE         = 0x0001
+SWP_NOZORDER       = 0x0004
+HWND_TOPMOST       = -1
 
 # Default minimap window size (pixels)
 MINIMAP_W = 320
@@ -127,57 +128,6 @@ def start(url: str, width: int = MINIMAP_W, height: int = MINIMAP_H,
     log.info("overlay: closed")
 
 
-def start_esp(url: str):
-    """
-    Full-screen transparent click-through ESP overlay.
-    Shows player boxes through walls on top of the game.
-    CS2 must be in Fullscreen Windowed mode.
-    Blocks until the window is closed — call from the main thread.
-    """
-    try:
-        import webview
-    except ImportError:
-        log.error("pywebview not installed. Run: pip install pywebview")
-        return
-
-    global _hwnd
-
-    w, h = _SW, _SH
-
-    win = webview.create_window(
-        "CS2ESP",
-        url,
-        x=0, y=0,
-        width=w,
-        height=h,
-        resizable=False,
-        frameless=True,
-        on_top=True,
-        transparent=True,
-        background_color="#00000000",
-        text_select=False,
-        zoomable=False,
-    )
-
-    def _on_shown():
-        global _hwnd
-        time.sleep(0.4)
-        _hwnd = _get_hwnd(win)
-        if not _hwnd:
-            log.warning("esp overlay: could not get HWND")
-            return
-
-        # Make the window click-through so the game receives all mouse/keyboard input
-        ex = ctypes.windll.user32.GetWindowLongW(_hwnd, GWL_EXSTYLE)
-        ex |= WS_EX_LAYERED | WS_EX_TRANSPARENT
-        ctypes.windll.user32.SetWindowLongW(_hwnd, GWL_EXSTYLE, ex)
-
-        # Force always-on-top
-        ctypes.windll.user32.SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | 0x0002)
-
-        log.info("esp overlay ready  hwnd=0x%X  %dx%d  click-through=ON", _hwnd, w, h)
-
-    win.events.shown += _on_shown
-    log.info("overlay: esp  %dx%d → %s", w, h, url)
-    webview.start(gui="edgechromium", debug=False)
-    log.info("overlay: closed")
+def start_esp(*_):
+    """Replaced by pygame-based ESP — see esp_overlay.py."""
+    log.info("start_esp: use esp_overlay.py instead")

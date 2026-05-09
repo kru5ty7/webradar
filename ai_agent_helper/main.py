@@ -1610,7 +1610,6 @@ if __name__ == "__main__":
     cfg = load_config()
     _check_for_update(cfg)
 
-    global _FUNNEL_URL
     _FUNNEL_URL = _setup_tailscale(cfg)
 
     if args.overlay:

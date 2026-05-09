@@ -192,22 +192,28 @@ def _start_funnel(port: int = None):
     p = port or HTTP_PORT
     log.info("tailscale: enabling funnel on port %d", p)
     try:
-        # Step 1: serve — proxy Tailscale HTTPS (443) → local HTTP port
-        r1 = subprocess.run(
-            ["tailscale", "serve", "--bg", "https", "/", "proxy",
-             f"http://localhost:{p}"],
+        # 'tailscale funnel --bg <port>' configures serve+funnel persistently and exits
+        r = subprocess.run(
+            ["tailscale", "funnel", "--bg", str(p)],
             capture_output=True, text=True, timeout=15,
         )
-        log.info("tailscale: serve exit=%d stdout=%s stderr=%s",
-                 r1.returncode, r1.stdout.strip()[:200], r1.stderr.strip()[:200])
-
-        # Step 2: funnel — expose the serve endpoint publicly
-        r2 = subprocess.run(
-            ["tailscale", "funnel", "--bg", "on"],
-            capture_output=True, text=True, timeout=15,
-        )
-        log.info("tailscale: funnel exit=%d stdout=%s stderr=%s",
-                 r2.returncode, r2.stdout.strip()[:200], r2.stderr.strip()[:200])
+        log.info("tailscale: funnel --bg exit=%d stdout=%s stderr=%s",
+                 r.returncode, r.stdout.strip()[:200], r.stderr.strip()[:200])
+        if r.returncode != 0:
+            # Older Tailscale: fall back to foreground serve + funnel on
+            log.warning("tailscale: --bg flag failed, trying legacy serve+funnel")
+            r2 = subprocess.run(
+                ["tailscale", "serve", f"http://localhost:{p}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            log.info("tailscale: legacy serve exit=%d stderr=%s",
+                     r2.returncode, r2.stderr.strip()[:200])
+            r3 = subprocess.run(
+                ["tailscale", "funnel", "on"],
+                capture_output=True, text=True, timeout=15,
+            )
+            log.info("tailscale: legacy funnel on exit=%d stderr=%s",
+                     r3.returncode, r3.stderr.strip()[:200])
     except Exception:
         log.exception("tailscale: _start_funnel raised an exception")
 

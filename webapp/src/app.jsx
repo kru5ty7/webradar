@@ -22,11 +22,9 @@ const NGROK_WS_URL = import.meta.env.VITE_WS_URL || null;
 
 const EFFECTIVE_IP = USE_LOCALHOST ? "localhost" : window.location.hostname;
 
-// Detect mode from URL param — reliable across all pywebview/browser combos
-const _urlMode   = new URLSearchParams(window.location.search).get("mode");
-const IS_ESP     = _urlMode === "esp";
-const IS_MINIMAP = _urlMode === "minimap";
-const IS_OVERLAY = IS_ESP || IS_MINIMAP;
+// Detect minimap overlay mode from URL param
+const IS_MINIMAP = new URLSearchParams(window.location.search).get("mode") === "minimap";
+const IS_OVERLAY = IS_MINIMAP;
 
 
 const DEFAULT_SETTINGS = {
@@ -243,6 +241,7 @@ const App = () => {
   const [grenades, setGrenades] = useState([]);
   const [dropped, setDropped]   = useState([]);
   const [settings, setSettings] = useState(loadSettings());
+  const [serverAddr, setServerAddr] = useState(null);
   const [bannerOpened, setBannerOpened] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -291,6 +290,8 @@ const App = () => {
         setBombData(parsedData.m_bomb);
         setGrenades(parsedData.m_grenades || []);
         setDropped(parsedData.m_dropped   || []);
+        if (parsedData.m_server_ip && parsedData.m_http_port)
+          setServerAddr(`http://${parsedData.m_server_ip}:${parsedData.m_http_port}`);
 
         const map = parsedData.m_map;
         if (map !== "invalid") {
@@ -464,6 +465,28 @@ const App = () => {
           </ul>
         </div>
       </div>
+
+      {/* Network address pill — bottom-left, click to copy */}
+      {!IS_OVERLAY && serverAddr && (
+        <div
+          title="Click to copy"
+          onClick={() => navigator.clipboard?.writeText(serverAddr)}
+          style={{
+            position: "fixed", bottom: 10, left: 12,
+            display: "flex", alignItems: "center", gap: 6,
+            background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 6, padding: "4px 10px", cursor: "pointer",
+            userSelect: "none", zIndex: 50,
+          }}
+        >
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em" }}>
+            NETWORK
+          </span>
+          <span style={{ fontSize: 11, color: "#7ec8e3", fontFamily: "monospace" }}>
+            {serverAddr}
+          </span>
+        </div>
+      )}
     </div>
   );
 };

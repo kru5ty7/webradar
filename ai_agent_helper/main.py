@@ -5,6 +5,7 @@ Double-click the compiled exe to start everything; a browser tab opens automatic
 """
 import asyncio
 import ctypes
+import socket
 import ctypes.wintypes as wintypes
 import http.server
 import json
@@ -40,6 +41,19 @@ LOG_FILE    = ROOT / "radar.log"
 
 WS_PORT       = 22006
 HTTP_PORT     = 5173   # built-dist server; same port as Vite so URLs always match
+
+def _get_local_ip() -> str:
+    """Return this machine's LAN IP by probing a UDP route (no packet sent)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+_LOCAL_IP = _get_local_ip()   # cached once at startup
 POLL_INTERVAL = 0.033  # ~30 Hz
 CACHE_MAX_AGE = 3600
 DUMPER_BASE   = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output"
@@ -904,13 +918,6 @@ class CS2Reader:
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
 
-        # View/projection matrix for world-to-screen ESP projection
-        view_matrix = []
-        dw_vm = self._g.get("dwViewMatrix", 0)
-        if dw_vm:
-            raw = self.mem._read(self.client_base + dw_vm, 64)  # 16 × float32
-            view_matrix = list(struct.unpack_from("<16f", raw))
-
         return {
             "m_local_team":   local_team,
             "m_players":      players,
@@ -918,7 +925,8 @@ class CS2Reader:
             "m_grenades":     grenades,
             "m_dropped":      dropped,
             "m_map":          map_name,
-            "m_view_matrix":  view_matrix,
+            "m_server_ip":    _LOCAL_IP,
+            "m_http_port":    HTTP_PORT,
         }
 
     def _get_map_name(self) -> str:
@@ -1388,13 +1396,10 @@ async def _run_async():
             await asyncio.sleep(POLL_INTERVAL)
 
 
-def run(overlay: bool = False, esp: bool = False):
-    mode = "esp" if esp else ("minimap" if overlay else "browser")
-    log.info("mode: %s", mode)
+def run(overlay: bool = False):
+    log.info("mode: %s", "minimap" if overlay else "browser")
 
-    if overlay or esp:
-        # Use the built dist (port 8765) when available; otherwise fall back to
-        # the Vite dev server (port 5173) so development runs without a build step.
+    if overlay:
         base_url = (f"http://localhost:{HTTP_PORT}"
                     if _static_path() is not None
                     else "http://localhost:5173")
@@ -1408,48 +1413,38 @@ def run(overlay: bool = False, esp: bool = False):
         time.sleep(1.5)
 
         import overlay as ov
-        if esp:
-            # Full-screen transparent click-through — CS2 must be Fullscreen Windowed
-            ov.start_esp(f"{base_url}?mode=esp")
-        else:
-            # Small draggable minimap window
-            ov.start(f"{base_url}?mode=minimap")
-
+        ov.start(f"{base_url}?mode=minimap")
         t.join()
     else:
         asyncio.run(_run_async())
 
 
-def _pick_mode() -> tuple[bool, bool]:
+def _pick_mode() -> bool:
     """
     Interactive mode selector shown at startup when no CLI flag is passed.
-    Returns (overlay, esp).
+    Returns overlay (bool).
     """
     print("\n" + "=" * 50)
     print("  CS2 Radar — Select Mode")
     print("=" * 50)
     print("  1  Normal  — browser radar (open in any browser)")
     print("  2  Overlay — small draggable minimap on screen")
-    print("  3  ESP     — full-screen player boxes through walls")
     print("=" * 50)
 
     while True:
         try:
-            choice = input("  Enter 1 / 2 / 3: ").strip()
+            choice = input("  Enter 1 / 2: ").strip()
         except (EOFError, KeyboardInterrupt):
             choice = "1"
 
         if choice == "1":
             print("  -> Normal mode\n")
-            return False, False
+            return False
         elif choice == "2":
             print("  -> Minimap overlay  (drag the bar to reposition)\n")
-            return True, False
-        elif choice == "3":
-            print("  -> ESP overlay  (CS2 must be in Fullscreen Windowed)\n")
-            return False, True
+            return True
         else:
-            print("  Please enter 1, 2, or 3.")
+            print("  Please enter 1 or 2.")
 
 
 if __name__ == "__main__":
@@ -1457,19 +1452,15 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="CS2 Radar")
     ap.add_argument("--normal",  action="store_true", help="Browser radar mode (default)")
     ap.add_argument("--overlay", action="store_true", help="Small draggable minimap overlay")
-    ap.add_argument("--esp",     action="store_true", help="Full-screen ESP overlay")
     args = ap.parse_args()
 
     _check_for_update(load_config())
 
-    if args.esp:
-        _overlay, _esp = False, True
-    elif args.overlay:
-        _overlay, _esp = True, False
+    if args.overlay:
+        _overlay = True
     elif args.normal:
-        _overlay, _esp = False, False
+        _overlay = False
     else:
-        # No flag passed — show interactive menu
-        _overlay, _esp = _pick_mode()
+        _overlay = _pick_mode()
 
-    run(overlay=_overlay, esp=_esp)
+    run(overlay=_overlay)

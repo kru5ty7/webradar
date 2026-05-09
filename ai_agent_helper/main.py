@@ -192,10 +192,14 @@ def _start_funnel(port: int = None):
     p = port or HTTP_PORT
     log.info("tailscale: enabling funnel on port %d", p)
     try:
-        r = subprocess.run(["tailscale", "funnel", str(p)],
-                           capture_output=True, text=True, timeout=10)
-        log.info("tailscale: funnel exit=%d stdout=%s stderr=%s",
-                 r.returncode, r.stdout.strip()[:200], r.stderr.strip()[:200])
+        # 'tailscale funnel <port>' runs forever in the foreground — launch detached
+        subprocess.Popen(
+            ["tailscale", "funnel", str(p)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        log.info("tailscale: funnel process launched (detached)")
     except Exception:
         log.exception("tailscale: _start_funnel raised an exception")
 

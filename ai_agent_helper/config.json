@@ -1,5 +1,7 @@
 {
   "m_use_localhost": true,
   "m_local_ip": "localhost",
-  "m_public_ip": ""
+  "m_public_ip": "",
+  "auto_update": true,
+  "github_token": ""
 }

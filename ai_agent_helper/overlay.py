@@ -12,7 +12,6 @@ log = logging.getLogger("radar")
 # Win32 constants
 GWL_EXSTYLE        = -20
 WS_EX_LAYERED      = 0x00080000
-WS_EX_TRANSPARENT  = 0x00000020
 SWP_NOSIZE         = 0x0001
 SWP_NOZORDER       = 0x0004
 HWND_TOPMOST       = -1
@@ -128,6 +127,3 @@ def start(url: str, width: int = MINIMAP_W, height: int = MINIMAP_H,
     log.info("overlay: closed")
 
 
-def start_esp(*_):
-    """Replaced by pygame-based ESP — see esp_overlay.py."""
-    log.info("start_esp: use esp_overlay.py instead")

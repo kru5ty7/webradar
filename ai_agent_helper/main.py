@@ -1220,17 +1220,40 @@ def _check_for_update(config: dict) -> None:
         log.warning("update: no .exe found in release %s", latest_tag)
         return
 
-    print(f"  Downloading {exe_asset['name']} ({exe_asset['size'] // 1024 // 1024} MB)...")
+    total_bytes = exe_asset["size"]
+    print(f"  Downloading {exe_asset['name']} ({total_bytes // 1024 // 1024} MB)...")
+    log.info("update: downloading %s (%d bytes)", exe_asset["name"], total_bytes)
     exe_path = Path(sys.executable)
     new_path  = exe_path.with_name("_update_new.exe")
 
     try:
+        import time as _time
         dl_headers = dict(headers)
         dl_headers["Accept"] = "application/octet-stream"
         dl_req = urllib.request.Request(exe_asset["browser_download_url"], headers=dl_headers)
         with urllib.request.urlopen(dl_req, timeout=180) as r:
-            new_path.write_bytes(r.read())
+            _start = _time.time()
+            _done  = 0
+            _chunk = 65536  # 64 KB chunks
+            with open(new_path, "wb") as f:
+                while True:
+                    buf = r.read(_chunk)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    _done += len(buf)
+                    _elapsed = max(_time.time() - _start, 0.001)
+                    _speed   = _done / _elapsed          # bytes/sec
+                    if total_bytes > 0:
+                        _pct = min(100, _done * 100 // total_bytes)
+                        _bar = "█" * (_pct // 3) + "░" * (33 - _pct // 3)
+                        print(f"\r  [{_bar}] {_pct:3d}%  {_speed/1024:6.0f} KB/s", end="", flush=True)
+                    else:
+                        print(f"\r  {_done//1024} KB  {_speed/1024:.0f} KB/s", end="", flush=True)
+        print()
+        log.info("update: download complete in %.1fs", _time.time() - _start)
     except Exception as exc:
+        print()
         log.warning("update download failed: %s", exc)
         try:
             new_path.unlink()

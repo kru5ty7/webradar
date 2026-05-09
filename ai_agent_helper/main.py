@@ -81,6 +81,128 @@ def _get_tailscale_ip() -> str | None:
     return None
 
 _TAILSCALE_IP = _get_tailscale_ip()   # None if Tailscale not running
+
+# ── Tailscale Funnel ──────────────────────────────────────────────────────────
+
+def _tailscale_installed() -> bool:
+    import shutil
+    return shutil.which("tailscale") is not None
+
+def _download_with_progress(url: str, dest: str):
+    import time
+    start = time.time()
+    def _hook(count, block, total):
+        done = count * block
+        elapsed = max(time.time() - start, 0.001)
+        speed = done / elapsed
+        if total > 0:
+            pct = min(100, done * 100 // total)
+            bar = "█" * (pct // 3) + "░" * (33 - pct // 3)
+            print(f"\r  [{bar}] {pct:3d}%  {speed/1024:6.0f} KB/s", end="", flush=True)
+        else:
+            print(f"\r  {done//1024} KB  {speed/1024:.0f} KB/s", end="", flush=True)
+    urllib.request.urlretrieve(url, dest, _hook)
+    print()
+
+def _install_tailscale():
+    import subprocess, tempfile, os
+    print("  Installing Tailscale via winget...")
+    r = subprocess.run(
+        ["winget", "install", "--id", "Tailscale.Tailscale",
+         "--silent", "--accept-package-agreements", "--accept-source-agreements"],
+        timeout=120
+    )
+    if r.returncode != 0:
+        print("  winget failed — downloading MSI installer...")
+        msi = tempfile.mktemp(suffix=".exe")
+        _download_with_progress(
+            "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe", msi
+        )
+        subprocess.run([msi, "/quiet"], timeout=120)
+        os.unlink(msi)
+
+def _tailscale_logged_in() -> bool:
+    import subprocess
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return False
+        data = json.loads(r.stdout)
+        return data.get("BackendState") == "Running"
+    except Exception:
+        return False
+
+def _get_funnel_url() -> str | None:
+    import subprocess
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return None
+        data = json.loads(r.stdout)
+        dns = data.get("Self", {}).get("DNSName", "").rstrip(".")
+        if dns:
+            return f"https://{dns}"
+    except Exception:
+        pass
+    return None
+
+def _start_funnel(port: int = None):
+    import subprocess
+    subprocess.run(["tailscale", "funnel", str(port or HTTP_PORT)], timeout=10)
+
+def _setup_tailscale(cfg: dict) -> str | None:
+    """First-run interactive Tailscale Funnel setup. Returns public URL or None."""
+    if "tailscale_funnel" in cfg:
+        if not cfg["tailscale_funnel"]:
+            return None
+        if _tailscale_installed() and _tailscale_logged_in():
+            _start_funnel()
+            return _get_funnel_url()
+        return None
+
+    print("\n" + "=" * 50)
+    print("  Tailscale Funnel — Global Access")
+    print("=" * 50)
+    print("  Let friends open the radar from ANYWHERE.")
+    print("  (They just need a browser — no install.)")
+    print("=" * 50)
+    try:
+        choice = input("  Enable Tailscale Funnel? (y/N): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        choice = "n"
+
+    enabled = choice == "y"
+    cfg["tailscale_funnel"] = enabled
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+    if not enabled:
+        print("  Skipped. Edit config.json to enable later.\n")
+        return None
+
+    if not _tailscale_installed():
+        _install_tailscale()
+        if not _tailscale_installed():
+            print("  Tailscale install failed — skipping Funnel.\n")
+            return None
+
+    if not _tailscale_logged_in():
+        import subprocess
+        print("  Opening Tailscale login in your browser...")
+        subprocess.run(["tailscale", "login"], timeout=120)
+        if not _tailscale_logged_in():
+            print("  Login incomplete — skipping Funnel.\n")
+            return None
+
+    _start_funnel()
+    url = _get_funnel_url()
+    if url:
+        print(f"  Funnel active: {url}\n")
+    return url
+
+_FUNNEL_URL: str | None = None   # assigned in __main__ after _setup_tailscale()
+
 POLL_INTERVAL = 0.033  # ~30 Hz
 CACHE_MAX_AGE = 3600
 DUMPER_BASE   = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output"
@@ -954,6 +1076,7 @@ class CS2Reader:
             "m_map":          map_name,
             "m_server_ip":    _LOCAL_IP,
             "m_tailscale_ip": _TAILSCALE_IP,
+            "m_funnel_url":   _FUNNEL_URL,
             "m_http_port":    HTTP_PORT,
         }
 
@@ -1482,7 +1605,11 @@ if __name__ == "__main__":
     ap.add_argument("--overlay", action="store_true", help="Small draggable minimap overlay")
     args = ap.parse_args()
 
-    _check_for_update(load_config())
+    cfg = load_config()
+    _check_for_update(cfg)
+
+    global _FUNNEL_URL
+    _FUNNEL_URL = _setup_tailscale(cfg)
 
     if args.overlay:
         _overlay = True

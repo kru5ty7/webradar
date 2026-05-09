@@ -55,6 +55,11 @@ const loadSettings = () => {
 
 // Module-level WS ref so settings panels can send messages to the Python backend
 let _backendWs = null;
+
+// Byte-rate tracking for the speed indicator
+let _bytesThisSec = 0;
+let _kbpsSnapshot = 0;
+setInterval(() => { _kbpsSnapshot = _bytesThisSec / 1024; _bytesThisSec = 0; }, 1000);
 function sendToBackend(data) {
   if (_backendWs && _backendWs.readyState === WebSocket.OPEN) {
     _backendWs.send(JSON.stringify(data));
@@ -243,6 +248,8 @@ const App = () => {
   const [settings, setSettings] = useState(loadSettings());
   const [serverAddr, setServerAddr] = useState(null);
   const [tailscaleAddr, setTailscaleAddr] = useState(null);
+  const [funnelAddr, setFunnelAddr] = useState(null);
+  const [kbps, setKbps] = useState(0);
   const [bannerOpened, setBannerOpened] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -291,11 +298,15 @@ const App = () => {
         setBombData(parsedData.m_bomb);
         setGrenades(parsedData.m_grenades || []);
         setDropped(parsedData.m_dropped   || []);
+        _bytesThisSec += raw.length;
+        setKbps(parseFloat(_kbpsSnapshot.toFixed(1)));
         if (parsedData.m_server_ip && parsedData.m_http_port) {
           const port = parsedData.m_http_port;
           setServerAddr(`http://${parsedData.m_server_ip}:${port}`);
           if (parsedData.m_tailscale_ip)
             setTailscaleAddr(`http://${parsedData.m_tailscale_ip}:${port}`);
+          if (parsedData.m_funnel_url)
+            setFunnelAddr(parsedData.m_funnel_url);
         }
 
         const map = parsedData.m_map;
@@ -480,15 +491,16 @@ const App = () => {
           borderRadius: 6, padding: "6px 10px", userSelect: "none", zIndex: 50,
         }}>
           {[
-            { label: "LAN", url: serverAddr, color: "#7ec8e3" },
+            { label: "LAN",       url: serverAddr,    color: "#7ec8e3" },
             ...(tailscaleAddr ? [{ label: "TAILSCALE", url: tailscaleAddr, color: "#9f7aea" }] : []),
+            ...(funnelAddr    ? [{ label: "FUNNEL",    url: funnelAddr,    color: "#68d391" }] : []),
           ].map(({ label, url, color }) => (
             <div key={label}
               title="Click to copy"
               onClick={() => navigator.clipboard?.writeText(url)}
               style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
             >
-              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.08em", width: 58, textAlign: "right" }}>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.08em", width: 62, textAlign: "right" }}>
                 {label}
               </span>
               <span style={{ fontSize: 11, color, fontFamily: "monospace" }}>
@@ -496,6 +508,11 @@ const App = () => {
               </span>
             </div>
           ))}
+          <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 3, paddingTop: 3, textAlign: "right" }}>
+            <span style={{ fontSize: 9, color: "rgba(255,255,255,0.28)", fontFamily: "monospace" }}>
+              ↓ {kbps.toFixed(1)} KB/s
+            </span>
+          </div>
         </div>
       )}
     </div>

@@ -88,10 +88,13 @@ _TAILSCALE_IP = _get_tailscale_ip()   # None if Tailscale not running
 
 def _tailscale_installed() -> bool:
     import shutil
-    return shutil.which("tailscale") is not None
+    found = shutil.which("tailscale") is not None
+    log.debug("tailscale installed: %s", found)
+    return found
 
 def _download_with_progress(url: str, dest: str):
     import time
+    log.info("tailscale: downloading %s → %s", url, dest)
     start = time.time()
     def _hook(count, block, total):
         done = count * block
@@ -103,36 +106,66 @@ def _download_with_progress(url: str, dest: str):
             print(f"\r  [{bar}] {pct:3d}%  {speed/1024:6.0f} KB/s", end="", flush=True)
         else:
             print(f"\r  {done//1024} KB  {speed/1024:.0f} KB/s", end="", flush=True)
-    urllib.request.urlretrieve(url, dest, _hook)
-    print()
+    try:
+        urllib.request.urlretrieve(url, dest, _hook)
+        print()
+        elapsed = time.time() - start
+        log.info("tailscale: download complete in %.1fs", elapsed)
+    except Exception:
+        print()
+        log.exception("tailscale: download failed")
+        raise
 
 def _install_tailscale():
     import subprocess, tempfile, os
+    log.info("tailscale: attempting install via winget")
     print("  Installing Tailscale via winget...")
-    r = subprocess.run(
-        ["winget", "install", "--id", "Tailscale.Tailscale",
-         "--silent", "--accept-package-agreements", "--accept-source-agreements"],
-        timeout=120
-    )
-    if r.returncode != 0:
-        print("  winget failed — downloading MSI installer...")
-        msi = tempfile.mktemp(suffix=".exe")
+    try:
+        r = subprocess.run(
+            ["winget", "install", "--id", "Tailscale.Tailscale",
+             "--silent", "--accept-package-agreements", "--accept-source-agreements"],
+            capture_output=True, text=True, timeout=120
+        )
+        log.info("tailscale: winget exit=%d stdout=%s stderr=%s",
+                 r.returncode, r.stdout.strip()[:200], r.stderr.strip()[:200])
+        if r.returncode == 0:
+            log.info("tailscale: winget install succeeded")
+            return
+    except Exception:
+        log.exception("tailscale: winget raised an exception")
+
+    log.warning("tailscale: winget failed — falling back to MSI download")
+    print("  winget failed — downloading MSI installer...")
+    msi = tempfile.mktemp(suffix=".exe")
+    try:
         _download_with_progress(
             "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe", msi
         )
-        subprocess.run([msi, "/quiet"], timeout=120)
-        os.unlink(msi)
+        r2 = subprocess.run([msi, "/quiet"], capture_output=True, text=True, timeout=120)
+        log.info("tailscale: MSI install exit=%d stderr=%s", r2.returncode, r2.stderr.strip()[:200])
+    except Exception:
+        log.exception("tailscale: MSI install raised an exception")
+    finally:
+        try:
+            os.unlink(msi)
+        except Exception:
+            pass
 
 def _tailscale_logged_in() -> bool:
     import subprocess
     try:
         r = subprocess.run(["tailscale", "status", "--json"],
                            capture_output=True, text=True, timeout=5)
+        log.debug("tailscale status exit=%d", r.returncode)
         if r.returncode != 0:
+            log.warning("tailscale: status check failed (exit %d): %s", r.returncode, r.stderr.strip())
             return False
         data = json.loads(r.stdout)
-        return data.get("BackendState") == "Running"
+        state = data.get("BackendState", "unknown")
+        log.debug("tailscale BackendState: %s", state)
+        return state == "Running"
     except Exception:
+        log.exception("tailscale: logged-in check raised an exception")
         return False
 
 def _get_funnel_url() -> str | None:
@@ -141,67 +174,100 @@ def _get_funnel_url() -> str | None:
         r = subprocess.run(["tailscale", "status", "--json"],
                            capture_output=True, text=True, timeout=5)
         if r.returncode != 0:
+            log.warning("tailscale: status failed when fetching funnel URL")
             return None
         data = json.loads(r.stdout)
         dns = data.get("Self", {}).get("DNSName", "").rstrip(".")
         if dns:
-            return f"https://{dns}"
+            url = f"https://{dns}"
+            log.info("tailscale: funnel URL = %s", url)
+            return url
+        log.warning("tailscale: DNSName not found in status output")
     except Exception:
-        pass
+        log.exception("tailscale: _get_funnel_url raised an exception")
     return None
 
 def _start_funnel(port: int = None):
     import subprocess
-    subprocess.run(["tailscale", "funnel", str(port or HTTP_PORT)], timeout=10)
+    p = port or HTTP_PORT
+    log.info("tailscale: enabling funnel on port %d", p)
+    try:
+        r = subprocess.run(["tailscale", "funnel", str(p)],
+                           capture_output=True, text=True, timeout=10)
+        log.info("tailscale: funnel exit=%d stdout=%s stderr=%s",
+                 r.returncode, r.stdout.strip()[:200], r.stderr.strip()[:200])
+    except Exception:
+        log.exception("tailscale: _start_funnel raised an exception")
 
 def _setup_tailscale(cfg: dict) -> str | None:
     """First-run interactive Tailscale Funnel setup. Returns public URL or None."""
-    if "tailscale_funnel" in cfg:
-        if not cfg["tailscale_funnel"]:
-            return None
-        if _tailscale_installed() and _tailscale_logged_in():
-            _start_funnel()
-            return _get_funnel_url()
-        return None
-
-    print("\n" + "=" * 50)
-    print("  Tailscale Funnel — Global Access")
-    print("=" * 50)
-    print("  Let friends open the radar from ANYWHERE.")
-    print("  (They just need a browser — no install.)")
-    print("=" * 50)
+    log.info("tailscale: setup called (tailscale_funnel in cfg: %s)",
+             "tailscale_funnel" in cfg)
     try:
-        choice = input("  Enable Tailscale Funnel? (y/N): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        choice = "n"
+        if "tailscale_funnel" in cfg:
+            if not cfg["tailscale_funnel"]:
+                log.info("tailscale: funnel disabled in config — skipping")
+                return None
+            log.info("tailscale: funnel previously enabled — re-activating")
+            if _tailscale_installed() and _tailscale_logged_in():
+                _start_funnel()
+                return _get_funnel_url()
+            log.warning("tailscale: not installed or not logged in — cannot re-activate")
+            return None
 
-    enabled = choice == "y"
-    cfg["tailscale_funnel"] = enabled
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        # First time — ask user
+        print("\n" + "=" * 50)
+        print("  Tailscale Funnel — Global Access")
+        print("=" * 50)
+        print("  Let friends open the radar from ANYWHERE.")
+        print("  (They just need a browser — no install.)")
+        print("=" * 50)
+        try:
+            choice = input("  Enable Tailscale Funnel? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "n"
 
-    if not enabled:
-        print("  Skipped. Edit config.json to enable later.\n")
-        return None
+        enabled = choice == "y"
+        log.info("tailscale: user chose enabled=%s", enabled)
+        cfg["tailscale_funnel"] = enabled
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
-    if not _tailscale_installed():
-        _install_tailscale()
+        if not enabled:
+            print("  Skipped. Edit config.json to enable later.\n")
+            return None
+
         if not _tailscale_installed():
-            print("  Tailscale install failed — skipping Funnel.\n")
-            return None
+            _install_tailscale()
+            if not _tailscale_installed():
+                log.error("tailscale: install failed — tailscale CLI still not found after install")
+                print("  Tailscale install failed — skipping Funnel.\n")
+                return None
 
-    if not _tailscale_logged_in():
-        import subprocess
-        print("  Opening Tailscale login in your browser...")
-        subprocess.run(["tailscale", "login"], timeout=120)
         if not _tailscale_logged_in():
-            print("  Login incomplete — skipping Funnel.\n")
-            return None
+            import subprocess
+            log.info("tailscale: not logged in — opening browser login")
+            print("  Opening Tailscale login in your browser...")
+            try:
+                subprocess.run(["tailscale", "login"], timeout=120)
+            except Exception:
+                log.exception("tailscale: login command raised an exception")
+            if not _tailscale_logged_in():
+                log.error("tailscale: still not logged in after login attempt")
+                print("  Login incomplete — skipping Funnel.\n")
+                return None
 
-    _start_funnel()
-    url = _get_funnel_url()
-    if url:
-        print(f"  Funnel active: {url}\n")
-    return url
+        _start_funnel()
+        url = _get_funnel_url()
+        if url:
+            log.info("tailscale: funnel active at %s", url)
+            print(f"  Funnel active: {url}\n")
+        else:
+            log.warning("tailscale: funnel started but could not determine public URL")
+        return url
+
+    except Exception:
+        log.exception("tailscale: _setup_tailscale raised an unexpected exception")
+        return None
 
 _FUNNEL_URL: str | None = None   # assigned in __main__ after _setup_tailscale()
 

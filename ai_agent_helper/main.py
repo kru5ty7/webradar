@@ -34,7 +34,9 @@ GITHUB_REPO = "kru5ty7/webradar"
 GITHUB_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 # ── config ────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent
+# When frozen (PyInstaller onefile), __file__ is inside the temp _MEIPASS dir
+# which is deleted on exit. Use sys.executable's dir so config persists next to the exe.
+ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 CONFIG_FILE = ROOT / "config.json"
 CACHE_FILE  = ROOT / "offsets_cache.json"
 LOG_FILE    = ROOT / "radar.log"

@@ -54,6 +54,33 @@ def _get_local_ip() -> str:
         return "localhost"
 
 _LOCAL_IP = _get_local_ip()   # cached once at startup
+
+def _get_tailscale_ip() -> str | None:
+    """Return the Tailscale IP (100.64.0.0/10) if Tailscale is running, else None."""
+    # Try the CLI first — most reliable
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            capture_output=True, text=True, timeout=3
+        )
+        ip = r.stdout.strip()
+        if r.returncode == 0 and ip:
+            return ip
+    except Exception:
+        pass
+    # Fallback: scan network interfaces for Tailscale's CGNAT range 100.64–100.127
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            parts = ip.split(".")
+            if len(parts) == 4 and parts[0] == "100" and 64 <= int(parts[1]) <= 127:
+                return ip
+    except Exception:
+        pass
+    return None
+
+_TAILSCALE_IP = _get_tailscale_ip()   # None if Tailscale not running
 POLL_INTERVAL = 0.033  # ~30 Hz
 CACHE_MAX_AGE = 3600
 DUMPER_BASE   = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output"
@@ -926,6 +953,7 @@ class CS2Reader:
             "m_dropped":      dropped,
             "m_map":          map_name,
             "m_server_ip":    _LOCAL_IP,
+            "m_tailscale_ip": _TAILSCALE_IP,
             "m_http_port":    HTTP_PORT,
         }
 

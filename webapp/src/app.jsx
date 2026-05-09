@@ -242,6 +242,7 @@ const App = () => {
   const [dropped, setDropped]   = useState([]);
   const [settings, setSettings] = useState(loadSettings());
   const [serverAddr, setServerAddr] = useState(null);
+  const [tailscaleAddr, setTailscaleAddr] = useState(null);
   const [bannerOpened, setBannerOpened] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -290,8 +291,12 @@ const App = () => {
         setBombData(parsedData.m_bomb);
         setGrenades(parsedData.m_grenades || []);
         setDropped(parsedData.m_dropped   || []);
-        if (parsedData.m_server_ip && parsedData.m_http_port)
-          setServerAddr(`http://${parsedData.m_server_ip}:${parsedData.m_http_port}`);
+        if (parsedData.m_server_ip && parsedData.m_http_port) {
+          const port = parsedData.m_http_port;
+          setServerAddr(`http://${parsedData.m_server_ip}:${port}`);
+          if (parsedData.m_tailscale_ip)
+            setTailscaleAddr(`http://${parsedData.m_tailscale_ip}:${port}`);
+        }
 
         const map = parsedData.m_map;
         if (map !== "invalid") {
@@ -466,25 +471,31 @@ const App = () => {
         </div>
       </div>
 
-      {/* Network address pill — bottom-left, click to copy */}
+      {/* Network address pill — bottom-left, click row to copy */}
       {!IS_OVERLAY && serverAddr && (
-        <div
-          title="Click to copy"
-          onClick={() => navigator.clipboard?.writeText(serverAddr)}
-          style={{
-            position: "fixed", bottom: 10, left: 12,
-            display: "flex", alignItems: "center", gap: 6,
-            background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 6, padding: "4px 10px", cursor: "pointer",
-            userSelect: "none", zIndex: 50,
-          }}
-        >
-          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em" }}>
-            NETWORK
-          </span>
-          <span style={{ fontSize: 11, color: "#7ec8e3", fontFamily: "monospace" }}>
-            {serverAddr}
-          </span>
+        <div style={{
+          position: "fixed", bottom: 10, left: 12,
+          display: "flex", flexDirection: "column", gap: 4,
+          background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 6, padding: "6px 10px", userSelect: "none", zIndex: 50,
+        }}>
+          {[
+            { label: "LAN", url: serverAddr, color: "#7ec8e3" },
+            ...(tailscaleAddr ? [{ label: "TAILSCALE", url: tailscaleAddr, color: "#9f7aea" }] : []),
+          ].map(({ label, url, color }) => (
+            <div key={label}
+              title="Click to copy"
+              onClick={() => navigator.clipboard?.writeText(url)}
+              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+            >
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.08em", width: 58, textAlign: "right" }}>
+                {label}
+              </span>
+              <span style={{ fontSize: 11, color, fontFamily: "monospace" }}>
+                {url}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

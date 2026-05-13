@@ -1813,14 +1813,19 @@ def _pick_mode() -> bool:
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="CS2 Radar")
-    ap.add_argument("--normal",  action="store_true", help="Browser radar mode (default)")
-    ap.add_argument("--overlay", action="store_true", help="Small draggable minimap overlay")
+    ap.add_argument("--normal",     action="store_true", help="Browser radar mode (default)")
+    ap.add_argument("--overlay",    action="store_true", help="Small draggable minimap overlay")
+    ap.add_argument("--no-funnel",  action="store_true", help="Skip Tailscale Funnel this run")
     args = ap.parse_args()
 
     cfg = load_config()
     _check_for_update(cfg)
 
-    _FUNNEL_URL = _setup_tailscale(cfg)
+    if args.no_funnel:
+        log.info("tailscale: skipped (--no-funnel)")
+        _FUNNEL_URL = None
+    else:
+        _FUNNEL_URL = _setup_tailscale(cfg)
 
     if args.overlay:
         _overlay = True

@@ -192,28 +192,17 @@ def _start_funnel(port: int = None):
     p = port or HTTP_PORT
     log.info("tailscale: enabling funnel on port %d", p)
     try:
-        # 'tailscale funnel --bg <port>' configures serve+funnel persistently and exits
-        r = subprocess.run(
-            ["tailscale", "funnel", "--bg", str(p)],
-            capture_output=True, text=True, timeout=15,
+        # 'tailscale funnel <port>' runs in the foreground — launch detached so we
+        # don't block startup. The process keeps the funnel alive while it runs.
+        subprocess.Popen(
+            ["tailscale", "funnel", str(p)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        log.info("tailscale: funnel --bg exit=%d stdout=%s stderr=%s",
-                 r.returncode, r.stdout.strip()[:200], r.stderr.strip()[:200])
-        if r.returncode != 0:
-            # Older Tailscale: fall back to foreground serve + funnel on
-            log.warning("tailscale: --bg flag failed, trying legacy serve+funnel")
-            r2 = subprocess.run(
-                ["tailscale", "serve", f"http://localhost:{p}"],
-                capture_output=True, text=True, timeout=15,
-            )
-            log.info("tailscale: legacy serve exit=%d stderr=%s",
-                     r2.returncode, r2.stderr.strip()[:200])
-            r3 = subprocess.run(
-                ["tailscale", "funnel", "on"],
-                capture_output=True, text=True, timeout=15,
-            )
-            log.info("tailscale: legacy funnel on exit=%d stderr=%s",
-                     r3.returncode, r3.stderr.strip()[:200])
+        import time as _t
+        _t.sleep(1)  # give tailscale a moment to register the funnel
+        log.info("tailscale: funnel process launched (detached)")
     except Exception:
         log.exception("tailscale: _start_funnel raised an exception")
 
@@ -1394,13 +1383,8 @@ class MapExtractor:
                 return p
         return None
 
-    def _parse_overview(self, txt: Path) -> dict | None:
-        """Extract pos_x, pos_y, scale from a CS2 KeyValues overview .txt file."""
+    def _parse_overview_text(self, content: str) -> dict | None:
         import re
-        try:
-            content = txt.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return None
         px = re.search(r'"pos_x"\s+"([^"]+)"', content)
         py = re.search(r'"pos_y"\s+"([^"]+)"', content)
         sc = re.search(r'"scale"\s+"([^"]+)"', content)
@@ -1410,6 +1394,104 @@ class MapExtractor:
             return {"x": float(px.group(1)), "y": float(py.group(1)), "scale": float(sc.group(1))}
         except ValueError:
             return None
+
+    def _parse_overview(self, txt: Path) -> dict | None:
+        try:
+            return self._parse_overview_text(txt.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            return None
+
+    def _extract_from_vpk(self, map_name: str, out: Path) -> bool:
+        """Extract map overview txt + radar png from CS2's pak01 VPK archives."""
+        dir_vpk = self.cs2_dir / "game" / "csgo" / "pak01_dir.vpk"
+        if not dir_vpk.exists():
+            log.warning("map extractor: pak01_dir.vpk not found")
+            return False
+        try:
+            raw = dir_vpk.read_bytes()
+            sig, ver = struct.unpack_from("<II", raw, 0)
+            if sig != 0x55AA1234:
+                log.warning("map extractor: bad VPK signature 0x%X", sig)
+                return False
+            tree_start = 28 if ver == 2 else 12  # v2 has 16 extra header bytes
+
+            pos = tree_start
+
+            def read_str():
+                nonlocal pos
+                end = raw.index(b'\x00', pos)
+                s = raw[pos:end].decode('utf-8', errors='ignore')
+                pos = end + 1
+                return s
+
+            # What we want: (ext, path, name)
+            targets = {
+                ("txt", "resource/overviews", map_name),
+                ("png", "resource/overviews", f"{map_name}_radar"),
+            }
+            found = {}
+
+            while pos < len(raw):
+                ext = read_str()
+                if not ext:
+                    break
+                while True:
+                    path = read_str()
+                    if not path:
+                        break
+                    # VPK stores paths without leading slash, forward-slash separated
+                    norm_path = path.replace("\\", "/").strip("/")
+                    while True:
+                        name = read_str()
+                        if not name:
+                            break
+                        # VPKDirectoryEntry: crc32 preload_bytes archive_index entry_offset entry_length suffix
+                        crc32, pre_bytes, arch_idx, entry_off, entry_len, suffix = \
+                            struct.unpack_from("<IHHIIH", raw, pos)
+                        pos += 18
+                        preload = raw[pos:pos + pre_bytes]
+                        pos += pre_bytes
+
+                        key = (ext, norm_path, name)
+                        if key in targets:
+                            found[key] = (arch_idx, entry_off, entry_len, preload)
+
+            def _read_entry(arch_idx, entry_off, entry_len, preload):
+                if entry_len == 0:
+                    return preload
+                pak = self.cs2_dir / "game" / "csgo" / f"pak01_{arch_idx:03d}.vpk"
+                with open(pak, "rb") as f:
+                    f.seek(entry_off)
+                    return preload + f.read(entry_len)
+
+            txt_key = ("txt", "resource/overviews", map_name)
+            png_key = ("png", "resource/overviews", f"{map_name}_radar")
+
+            if txt_key not in found or png_key not in found:
+                log.warning("map extractor: %s not found in VPK (txt=%s png=%s)",
+                            map_name, txt_key in found, png_key in found)
+                return False
+
+            txt_bytes = _read_entry(*found[txt_key])
+            png_bytes = _read_entry(*found[png_key])
+
+            overview = self._parse_overview_text(txt_bytes.decode("utf-8", errors="ignore"))
+            if not overview:
+                log.warning("map extractor: failed to parse VPK overview txt for %s", map_name)
+                return False
+
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "data.json").write_text(json.dumps(overview))
+            (out / "radar.png").write_bytes(png_bytes)
+            (out / "background.png").write_bytes(png_bytes)
+            (out / "callouts.json").write_text(json.dumps({"map": map_name, "callouts": []}))
+            log.info("map extractor: VPK extracted %s  (x=%.0f y=%.0f scale=%.2f)",
+                     map_name, overview["x"], overview["y"], overview["scale"])
+            return True
+
+        except Exception:
+            log.exception("map extractor: VPK extraction failed for %s", map_name)
+            return False
 
     def ensure(self, map_name: str) -> bool:
         """
@@ -1427,36 +1509,35 @@ class MapExtractor:
         if not self.cs2_dir:
             return False
 
+        # Try loose files first (workshop maps / older installs)
         ov_dir  = self.cs2_dir / "game" / "csgo" / "resource" / "overviews"
         txt_src = ov_dir / f"{map_name}.txt"
         png_src = ov_dir / f"{map_name}_radar.png"
 
-        if not txt_src.exists():
-            log.warning("map extractor: no overview txt for %s at %s", map_name, txt_src)
-            return False
-        if not png_src.exists():
-            log.warning("map extractor: no radar png for %s at %s", map_name, png_src)
-            return False
+        if txt_src.exists() and png_src.exists():
+            import shutil
+            data = self._parse_overview(txt_src)
+            if data:
+                try:
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "data.json").write_text(json.dumps(data))
+                    shutil.copy(png_src, out / "radar.png")
+                    shutil.copy(png_src, out / "background.png")
+                    (out / "callouts.json").write_text(json.dumps({"map": map_name, "callouts": []}))
+                    log.info("map extractor: extracted %s  (x=%.0f y=%.0f scale=%.2f)",
+                             map_name, data["x"], data["y"], data["scale"])
+                    self._seen.add(map_name)
+                    return True
+                except Exception as exc:
+                    log.error("map extractor: write failed for %s: %s", map_name, exc)
 
-        data = self._parse_overview(txt_src)
-        if not data:
-            log.warning("map extractor: failed to parse overview for %s", map_name)
-            return False
+        # Standard CS2 maps live inside VPK archives
+        if self._extract_from_vpk(map_name, out):
+            self._seen.add(map_name)
+            return True
 
-        import shutil
-        try:
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "data.json").write_text(json.dumps(data))
-            shutil.copy(png_src, out / "radar.png")
-            shutil.copy(png_src, out / "background.png")   # no blur — acceptable fallback
-            (out / "callouts.json").write_text(json.dumps({"map": map_name, "callouts": []}))
-        except Exception as exc:
-            log.error("map extractor: write failed for %s: %s", map_name, exc)
-            return False
-
-        log.info("map extractor: extracted %s  (x=%.0f y=%.0f scale=%.2f)",
-                 map_name, data["x"], data["y"], data["scale"])
-        self._seen.add(map_name)
+        log.warning("map extractor: could not extract %s (not in loose files or VPK)", map_name)
+        return False
         return True
 
 

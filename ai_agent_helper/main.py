@@ -440,8 +440,14 @@ class Memory:
             return bytes(size)
         buf  = ctypes.create_string_buffer(size)
         read = ctypes.c_size_t()
-        kernel32.ReadProcessMemory(
+        ok   = kernel32.ReadProcessMemory(
             self.handle, ctypes.c_void_p(address), buf, size, ctypes.byref(read))
+        if not ok:
+            err = ctypes.get_last_error()
+            # ERROR_INVALID_HANDLE (6) or ERROR_ACCESS_DENIED (5) = process gone
+            if err in (5, 6):
+                raise OSError(err, f"ReadProcessMemory failed: winerror={err} (process died)")
+            # ERROR_PARTIAL_COPY (299) is normal at page boundaries — return zeros
         return buf.raw
 
     def ptr(self, address: int) -> int:
@@ -1577,6 +1583,8 @@ async def _run_async():
             webbrowser.open(f"http://localhost:{HTTP_PORT}")
 
         _last_map = None
+        _none_streak = 0          # consecutive collect() → None frames
+        _last_good_data = 0.0     # time of last successful broadcast
 
         _setup_failures = 0
         _did_local_scan  = False
@@ -1636,11 +1644,24 @@ async def _run_async():
             try:
                 data = await loop.run_in_executor(None, reader.collect)
                 if data is None:
+                    _none_streak += 1
                     now = time.time()
                     if now - _last_waiting_log >= 5:
                         log.info("in CS2 but not in an active match (team=spectator/none)")
                         _last_waiting_log = now
+                    # If data has been None for >30s and we had good data before,
+                    # verify CS2 is still alive (silent RPM failure won't raise OSError
+                    # until the next valid address read; this catches the gap).
+                    if _none_streak > 100 and _last_good_data > 0:
+                        live_pid = await loop.run_in_executor(None, lambda: mem.find_pid("cs2.exe"))
+                        if not live_pid or live_pid != mem.pid:
+                            log.warning("CS2 gone (watchdog) — detaching")
+                            mem.close()
+                            reader = None
+                            _none_streak = 0
                 else:
+                    _none_streak = 0
+                    _last_good_data = time.time()
                     map_name = data.get("m_map", "invalid")
                     if map_name != _last_map and map_name != "invalid":
                         _last_map = map_name
@@ -1650,6 +1671,7 @@ async def _run_async():
                 log.warning("CS2 process lost (%s) — detaching", exc)
                 mem.close()
                 reader = None
+                _none_streak = 0
             except Exception as exc:
                 log.error("unexpected error in collect/send: %s", exc, exc_info=True)
 

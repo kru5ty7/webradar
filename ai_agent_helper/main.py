@@ -1653,8 +1653,20 @@ def _start_http(static_dir: str, maps_cache: Path):
             t2 = threading.Thread(target=_fwd, args=(backend, client_sock), daemon=True)
             t1.start(); t2.start()
             t1.join(); t2.join()
+            # Tell the HTTP machinery not to reuse this socket after the proxy ends
+            self.close_connection = True
 
-    srv = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), _Handler)
+    import socketserver
+    class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+        def handle_error(self, request, client_address):
+            # Suppress noisy but harmless "client closed connection" errors
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+                return
+            super().handle_error(request, client_address)
+
+    srv = _Server(("0.0.0.0", HTTP_PORT), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log.info("HTTP  -> http://0.0.0.0:%d  (maps_cache=%s)", HTTP_PORT, _maps)
 

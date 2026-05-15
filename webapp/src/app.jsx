@@ -40,6 +40,8 @@ const DEFAULT_SETTINGS = {
   bombColor: "#ff4500",
   bombHighlight: true,
   showDeathCross: true,
+  showDropped: true,
+  droppedOpacity: 1,
   autoUpdate: true,
 };
 
@@ -113,21 +115,22 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
 
       {/* Sliders — uncontrolled (defaultValue) + onInput for live updates */}
       {[
-        { label:"Dot Size",  key:"dotSize",  min:0.5, max:2,   step:0.1 },
-        { label:"Bomb Size", key:"bombSize", min:0.1, max:2,   step:0.1 },
-      ].map(({ label, key, min, max, step }) => (
+        { label:"Dot Size",        key:"dotSize",       min:0.5, max:2,   step:0.1 },
+        { label:"Bomb Size",       key:"bombSize",      min:0.1, max:2,   step:0.1 },
+        { label:"Dropped Opacity", key:"droppedOpacity",min:0.1, max:1,   step:0.05, fmt: v => Math.round(v*100)+"%" },
+      ].map(({ label, key, min, max, step, fmt }) => (
         <div key={key} style={{ marginBottom:8 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
             <span style={{ color:"#8ab", fontSize:12 }}>{label}</span>
             <span id={`lbl-${key}`} style={{ color:"#b1d0e7", fontSize:12, fontFamily:"monospace" }}>
-              {(settings[key] ?? 1).toFixed(1)}x
+              {fmt ? fmt(settings[key] ?? 1) : (settings[key] ?? 1).toFixed(1) + "x"}
             </span>
           </div>
           <input type="range" min={min} max={max} step={step}
             defaultValue={settings[key]}
             onInput={e => {
               const v = parseFloat(e.target.value);
-              document.getElementById(`lbl-${key}`).textContent = v.toFixed(1) + "x";
+              document.getElementById(`lbl-${key}`).textContent = fmt ? fmt(v) : v.toFixed(1) + "x";
               setVal(key, v);
             }}
             style={{ width:"100%", accentColor:"#4ade80", cursor:"pointer" }} />
@@ -142,9 +145,10 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       <SettingRow label="Molotov"     checked={!!settings.showMolly}      onToggle={() => toggle("showMolly")} />
       <SettingRow label="Flash"       checked={!!settings.showFlash}      onToggle={() => toggle("showFlash")} />
       <SettingRow label="Callouts"    checked={!!settings.showCallouts}   onToggle={() => toggle("showCallouts")} />
-      <SettingRow label="Death Cross" checked={!!settings.showDeathCross} onToggle={() => toggle("showDeathCross")} />
-      <SettingRow label="Bomb Pulse"  checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />
-      <SettingRow label="Auto Update" checked={!!(settings.autoUpdate ?? true)} onToggle={() => toggle("autoUpdate")} />
+      <SettingRow label="Death Cross"    checked={!!settings.showDeathCross} onToggle={() => toggle("showDeathCross")} />
+      <SettingRow label="Bomb Pulse"     checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />
+      <SettingRow label="Dropped Weapons" checked={!!(settings.showDropped ?? true)} onToggle={() => toggle("showDropped")} />
+      <SettingRow label="Auto Update"    checked={!!(settings.autoUpdate ?? true)} onToggle={() => toggle("autoUpdate")} />
 
       {/* Bomb color */}
       <div style={{ marginTop:8 }}>

@@ -83,8 +83,10 @@ const TIER_SCALE = {
   zeus:   1.05,
 };
 
-const DroppedItemLayer = ({ items, mapData, radarImage }) => {
+const DroppedItemLayer = ({ items, mapData, radarImage, settings }) => {
   if (!items?.length || !mapData || !radarImage) return null;
+  if (!(settings?.showDropped ?? true)) return null;
+  const opacity = settings?.droppedOpacity ?? 1;
 
   const { width: imgW, height: imgH } =
     radarImage.getBoundingClientRect?.() ?? { width: 0, height: 0 };
@@ -113,6 +115,7 @@ const DroppedItemLayer = ({ items, mapData, radarImage }) => {
               transform:     `translate(${px}px, ${py}px) translate(-50%, -50%)`,
               pointerEvents: "none",
               zIndex:        2,
+              opacity,
             }}
           >
             {/* Tier indicator dot */}

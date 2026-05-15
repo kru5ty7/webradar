@@ -263,7 +263,9 @@ const App = () => {
     const wsUrl = NGROK_WS_URL
       || (USE_LOCALHOST
           ? `ws://localhost:${PORT}/cs2_webradar`
-          : `ws://${EFFECTIVE_IP}:${PORT}/cs2_webradar`);
+          : window.location.protocol === 'https:'
+            ? `wss://${window.location.host}/cs2_webradar`
+            : `ws://${EFFECTIVE_IP}:${PORT}/cs2_webradar`);
 
     let ws = null;
     let retryTimer = null;

@@ -192,17 +192,21 @@ def _start_funnel(port: int = None):
     p = port or HTTP_PORT
     log.info("tailscale: enabling funnel on port %d", p)
     try:
-        # 'tailscale funnel <port>' runs in the foreground — launch detached so we
-        # don't block startup. The process keeps the funnel alive while it runs.
-        subprocess.Popen(
-            ["tailscale", "funnel", str(p)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        # Step 1: serve — register local port with Tailscale (exits quickly with --bg)
+        r1 = subprocess.run(
+            ["tailscale", "serve", "--bg", str(p)],
+            capture_output=True, text=True, timeout=15,
         )
-        import time as _t
-        _t.sleep(1)  # give tailscale a moment to register the funnel
-        log.info("tailscale: funnel process launched (detached)")
+        log.info("tailscale: serve --bg exit=%d stdout=%s stderr=%s",
+                 r1.returncode, r1.stdout.strip()[:200], r1.stderr.strip()[:200])
+
+        # Step 2: funnel — expose serve endpoint publicly (exits quickly with --bg)
+        r2 = subprocess.run(
+            ["tailscale", "funnel", "--bg", str(p)],
+            capture_output=True, text=True, timeout=15,
+        )
+        log.info("tailscale: funnel --bg exit=%d stdout=%s stderr=%s",
+                 r2.returncode, r2.stdout.strip()[:200], r2.stderr.strip()[:200])
     except Exception:
         log.exception("tailscale: _start_funnel raised an exception")
 
@@ -1576,6 +1580,11 @@ def _start_http(static_dir: str, maps_cache: Path):
             return index if index.exists() else None
 
         def do_GET(self):
+            # Proxy WebSocket upgrades to the WS server at WS_PORT
+            if (self.path.split("?")[0] == "/cs2_webradar" and
+                    self.headers.get("Upgrade", "").lower() == "websocket"):
+                self._proxy_ws()
+                return
             path = self._resolve(self.path)
             if path is None or not path.exists():
                 self.send_error(404)
@@ -1588,6 +1597,62 @@ def _start_http(static_dir: str, maps_cache: Path):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(data)
+
+        def _proxy_ws(self):
+            import hashlib, base64
+            key = self.headers.get("Sec-WebSocket-Key", "")
+            accept = base64.b64encode(
+                hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+            ).decode()
+            # Complete the handshake with the browser
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.wfile.flush()
+            # Open a raw TCP connection to the actual WS server
+            try:
+                backend = socket.create_connection(("localhost", WS_PORT), timeout=5)
+            except Exception as e:
+                log.warning("ws proxy: backend connect failed: %s", e)
+                return
+            # Send a proper WebSocket upgrade to the backend
+            backend.sendall((
+                f"GET /cs2_webradar HTTP/1.1\r\n"
+                f"Host: localhost:{WS_PORT}\r\n"
+                f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ).encode())
+            # Consume the backend's 101 response before forwarding raw frames
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                chunk = backend.recv(4096)
+                if not chunk:
+                    backend.close()
+                    return
+                resp += chunk
+            # Remove socket timeouts then forward bytes in both directions
+            client_sock = self.connection
+            client_sock.settimeout(None)
+            backend.settimeout(None)
+            def _fwd(src, dst):
+                try:
+                    while True:
+                        d = src.recv(65536)
+                        if not d:
+                            break
+                        dst.sendall(d)
+                except Exception:
+                    pass
+                finally:
+                    for s in (src, dst):
+                        try: s.close()
+                        except: pass
+            t1 = threading.Thread(target=_fwd, args=(client_sock, backend), daemon=True)
+            t2 = threading.Thread(target=_fwd, args=(backend, client_sock), daemon=True)
+            t1.start(); t2.start()
+            t1.join(); t2.join()
 
     srv = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()

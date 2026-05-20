@@ -78,18 +78,39 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
               />
             </div>
 
+            {/* Dropped weapons opacity */}
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-radar-secondary text-sm">Dropped Opacity</span>
+                <span id="lbl-droppedOpacity" className="text-radar-primary text-sm font-mono">
+                  {Math.round((settings.droppedOpacity ?? 1) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range" min="0.1" max="1" step="0.05"
+                defaultValue={settings.droppedOpacity ?? 1}
+                onInput={e => {
+                  const v = parseFloat(e.target.value);
+                  document.getElementById("lbl-droppedOpacity").textContent = Math.round(v * 100) + "%";
+                  onSettingsChange({ ...settings, droppedOpacity: v });
+                }}
+                className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-radar-primary"
+              />
+            </div>
+
             {/* Toggles */}
             <div className="space-y-1">
-              <Toggle label="Ally Names"   checked={!!settings.showAllNames}          onToggle={() => toggle("showAllNames")} />
-              <Toggle label="Enemy Names"  checked={!!settings.showEnemyNames}         onToggle={() => toggle("showEnemyNames")} />
-              <Toggle label="View Cones"   checked={!!settings.showViewCones}          onToggle={() => toggle("showViewCones")} />
-              <Toggle label="💨 Smoke"     checked={!!settings.showSmoke}             onToggle={() => toggle("showSmoke")} />
-              <Toggle label="🔥 Molly"     checked={!!settings.showMolly}             onToggle={() => toggle("showMolly")} />
-              <Toggle label="⚡ Flash"     checked={!!settings.showFlash}             onToggle={() => toggle("showFlash")} />
-              <Toggle label="Map Callouts" checked={!!(settings.showCallouts ?? true)} onToggle={() => toggle("showCallouts")} />
-              <Toggle label="Death Cross"  checked={!!(settings.showDeathCross ?? true)} onToggle={() => toggle("showDeathCross")} />
-              <Toggle label="Bomb Pulse"   checked={!!(settings.bombHighlight ?? true)}  onToggle={() => toggle("bombHighlight")} />
-              <Toggle label="Auto Update"  checked={!!(settings.autoUpdate ?? true)}     onToggle={() => toggle("autoUpdate")} />
+              <Toggle label="Ally Names"       checked={!!settings.showAllNames}               onToggle={() => toggle("showAllNames")} />
+              <Toggle label="Enemy Names"      checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
+              <Toggle label="View Cones"       checked={!!settings.showViewCones}               onToggle={() => toggle("showViewCones")} />
+              <Toggle label="💨 Smoke"         checked={!!settings.showSmoke}                  onToggle={() => toggle("showSmoke")} />
+              <Toggle label="🔥 Molly"         checked={!!settings.showMolly}                  onToggle={() => toggle("showMolly")} />
+              <Toggle label="⚡ Flash"         checked={!!settings.showFlash}                  onToggle={() => toggle("showFlash")} />
+              <Toggle label="Map Callouts"     checked={!!(settings.showCallouts ?? true)}      onToggle={() => toggle("showCallouts")} />
+              <Toggle label="Death Cross"      checked={!!(settings.showDeathCross ?? true)}    onToggle={() => toggle("showDeathCross")} />
+              <Toggle label="Bomb Pulse"       checked={!!(settings.bombHighlight ?? true)}     onToggle={() => toggle("bombHighlight")} />
+              <Toggle label="Dropped Weapons"  checked={!!(settings.showDropped ?? true)}       onToggle={() => toggle("showDropped")} />
+              <Toggle label="Auto Update"      checked={!!(settings.autoUpdate ?? true)}        onToggle={() => toggle("autoUpdate")} />
             </div>
 
             {/* Bomb color */}

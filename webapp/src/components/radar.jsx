@@ -64,6 +64,7 @@ const Radar = ({
         items={dropped}
         mapData={mapData}
         radarImage={radarImageEl}
+        settings={settings}
       />
     </div>
   );

@@ -5,6 +5,7 @@ import PlayerCard from "./components/PlayerCard";
 import Radar from "./components/Radar";
 import { getLatency, Latency } from "./components/latency";
 import MaskedIcon from "./components/maskedicon";
+import EspOverlay from "./components/EspOverlay";
 
 /* change this to '1' if you want to use offline (your own pc only) */
 const USE_LOCALHOST = 0;
@@ -22,9 +23,17 @@ const NGROK_WS_URL = import.meta.env.VITE_WS_URL || null;
 
 const EFFECTIVE_IP = USE_LOCALHOST ? "localhost" : window.location.hostname;
 
-// Detect minimap overlay mode from URL param
-const IS_MINIMAP = new URLSearchParams(window.location.search).get("mode") === "minimap";
-const IS_OVERLAY = IS_MINIMAP;
+// Detect mode from URL param
+const _urlMode = new URLSearchParams(window.location.search).get("mode");
+const IS_MINIMAP = _urlMode === "minimap";
+const IS_ESP     = _urlMode === "esp";
+const IS_OVERLAY = IS_MINIMAP || IS_ESP;
+
+// Force transparent document background for ESP mode
+if (IS_ESP) {
+  document.documentElement.style.background = "transparent";
+  document.body.style.background = "transparent";
+}
 
 
 const DEFAULT_SETTINGS = {
@@ -249,6 +258,7 @@ const App = () => {
   const [bombData, setBombData] = useState();
   const [grenades, setGrenades] = useState([]);
   const [dropped, setDropped]   = useState([]);
+  const [viewMatrix, setViewMatrix] = useState([]);
   const [settings, setSettings] = useState(loadSettings());
   const [serverAddr, setServerAddr] = useState(null);
   const [tailscaleAddr, setTailscaleAddr] = useState(null);
@@ -304,6 +314,8 @@ const App = () => {
         setBombData(parsedData.m_bomb);
         setGrenades(parsedData.m_grenades || []);
         setDropped(parsedData.m_dropped   || []);
+        if (parsedData.m_view_matrix?.length === 16)
+          setViewMatrix(parsedData.m_view_matrix);
         _bytesThisSec += raw.length;
         setKbps(parseFloat(_kbpsSnapshot.toFixed(1)));
         if (parsedData.m_server_ip && parsedData.m_http_port) {
@@ -343,6 +355,26 @@ const App = () => {
   }, []);
 
 
+
+  // ── ESP overlay mode ─────────────────────────────────────────────────────
+  if (IS_ESP) {
+    return (
+      <div style={{
+        width: "100vw", height: "100vh",
+        background: "transparent",
+        overflow: "hidden",
+        position: "fixed", top: 0, left: 0,
+      }}>
+        <EspOverlay
+          playerArray={playerArray}
+          localTeam={localTeam}
+          viewMatrix={viewMatrix}
+          bombData={bombData}
+          settings={settings}
+        />
+      </div>
+    );
+  }
 
   // ── Minimap overlay mode ──────────────────────────────────────────────────
   if (IS_MINIMAP) {

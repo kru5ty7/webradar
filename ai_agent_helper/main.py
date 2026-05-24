@@ -330,6 +330,10 @@ def _setup_logging() -> logging.Logger:
 
     # Silence noisy websocket-client internal chatter
     logging.getLogger("websocket").setLevel(logging.WARNING)
+    # Suppress spurious "did not receive a valid HTTP request" from plain-HTTP
+    # probes hitting the WS port (non-fatal, server keeps running fine)
+    logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
+    logging.getLogger("websockets.asyncio.server").setLevel(logging.CRITICAL)
 
     return log
 
@@ -1922,7 +1926,7 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     cfg = load_config()
-    _check_for_update(cfg)
+    threading.Thread(target=_check_for_update, args=(cfg,), daemon=True).start()
 
     if args.no_funnel:
         log.info("tailscale: skipped (--no-funnel)")

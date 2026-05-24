@@ -1,5 +1,5 @@
 import ReactDOM from "react-dom/client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import PlayerCard from "./components/PlayerCard";
 import Radar from "./components/Radar";
@@ -254,6 +254,7 @@ const App = () => {
   const [averageLatency, setAverageLatency] = useState(0);
   const [playerArray, setPlayerArray] = useState([]);
   const [mapData, setMapData] = useState();
+  const lastMapRef = useRef(null);
   const [localTeam, setLocalTeam] = useState();
   const [bombData, setBombData] = useState();
   const [grenades, setGrenades] = useState([]);
@@ -328,7 +329,8 @@ const App = () => {
         }
 
         const map = parsedData.m_map;
-        if (map !== "invalid") {
+        if (map !== "invalid" && map !== lastMapRef.current) {
+          lastMapRef.current = map;
           try {
             const res = await fetch(`data/${map}/data.json`);
             if (res.ok) {

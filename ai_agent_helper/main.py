@@ -794,6 +794,9 @@ class CS2Reader:
         self.gvars         = self.mem.ptr(self.client_base + dw_gvars)
         self.lpc_addr      = self.client_base + dw_lpc
 
+        dw_vm = self._g.get("dwViewMatrix", 0)
+        self.view_matrix_addr = (self.client_base + dw_vm) if dw_vm else 0
+
         if not self.entity_system:
             log.warning("entity system ptr is null (raw bytes @ dwEntityList: %s) — CS2 may be in main menu or offsets are stale",
                         raw_list.hex())
@@ -1058,6 +1061,7 @@ class CS2Reader:
                     "m_team":       team,
                     "m_health":     health,
                     "m_is_dead":    is_dead,
+                    "m_is_local":   (ent == lpc),
                     "m_model_name": "",
                     "m_steam_id":   str(steam_id),
                     "m_money":      money,
@@ -1152,6 +1156,15 @@ class CS2Reader:
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
 
+        view_matrix = []
+        if self.view_matrix_addr:
+            raw_vm = self.mem._read(self.view_matrix_addr, 64)
+            if raw_vm and len(raw_vm) == 64:
+                try:
+                    view_matrix = list(struct.unpack_from("<16f", raw_vm))
+                except Exception:
+                    pass
+
         return {
             "m_local_team":   local_team,
             "m_players":      players,
@@ -1159,6 +1172,7 @@ class CS2Reader:
             "m_grenades":     grenades,
             "m_dropped":      dropped,
             "m_map":          map_name,
+            "m_view_matrix":  view_matrix,
             "m_server_ip":    _LOCAL_IP,
             "m_tailscale_ip": _TAILSCALE_IP,
             "m_funnel_url":   _FUNNEL_URL,
@@ -1836,14 +1850,15 @@ async def _run_async():
             await asyncio.sleep(POLL_INTERVAL)
 
 
-def run(overlay: bool = False):
-    log.info("mode: %s", "minimap" if overlay else "browser")
+def run(overlay: bool = False, esp: bool = False):
+    mode = "esp" if esp else ("minimap" if overlay else "browser")
+    log.info("mode: %s", mode)
 
-    if overlay:
+    if mode in ("minimap", "esp"):
         base_url = (f"http://localhost:{HTTP_PORT}"
                     if _static_path() is not None
                     else "http://localhost:5173")
-        log.info("overlay will load from %s", base_url)
+        log.info("%s will load from %s", mode, base_url)
 
         t = threading.Thread(
             target=lambda: asyncio.run(_run_async()),
@@ -1852,39 +1867,49 @@ def run(overlay: bool = False):
         t.start()
         time.sleep(1.5)
 
-        import overlay as ov
-        ov.start(f"{base_url}?mode=minimap")
+        if mode == "minimap":
+            import overlay as ov
+            ov.start(f"{base_url}?mode=minimap")
+        else:
+            import esp as esp_mod
+            esp_mod.start(f"{base_url}?mode=esp")
+
         t.join()
     else:
         asyncio.run(_run_async())
 
 
-def _pick_mode() -> bool:
+def _pick_mode() -> str:
     """
     Interactive mode selector shown at startup when no CLI flag is passed.
-    Returns overlay (bool).
+    Returns "browser", "minimap", or "esp".
     """
     print("\n" + "=" * 50)
     print("  CS2 Radar — Select Mode")
     print("=" * 50)
     print("  1  Normal  — browser radar (open in any browser)")
     print("  2  Overlay — small draggable minimap on screen")
+    print("  3  ESP     — full-screen transparent player boxes")
+    print("               (CS2 must be in Borderless Windowed!)")
     print("=" * 50)
 
     while True:
         try:
-            choice = input("  Enter 1 / 2: ").strip()
+            choice = input("  Enter 1 / 2 / 3: ").strip()
         except (EOFError, KeyboardInterrupt):
             choice = "1"
 
         if choice == "1":
             print("  -> Normal mode\n")
-            return False
+            return "browser"
         elif choice == "2":
             print("  -> Minimap overlay  (drag the bar to reposition)\n")
-            return True
+            return "minimap"
+        elif choice == "3":
+            print("  -> ESP overlay  (Ctrl+C in this window to exit)\n")
+            return "esp"
         else:
-            print("  Please enter 1 or 2.")
+            print("  Please enter 1, 2 or 3.")
 
 
 if __name__ == "__main__":
@@ -1892,6 +1917,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="CS2 Radar")
     ap.add_argument("--normal",     action="store_true", help="Browser radar mode (default)")
     ap.add_argument("--overlay",    action="store_true", help="Small draggable minimap overlay")
+    ap.add_argument("--esp",        action="store_true", help="Full-screen transparent ESP overlay")
     ap.add_argument("--no-funnel",  action="store_true", help="Skip Tailscale Funnel this run")
     args = ap.parse_args()
 
@@ -1904,11 +1930,13 @@ if __name__ == "__main__":
     else:
         _FUNNEL_URL = _setup_tailscale(cfg)
 
-    if args.overlay:
-        _overlay = True
+    if args.esp:
+        _mode = "esp"
+    elif args.overlay:
+        _mode = "minimap"
     elif args.normal:
-        _overlay = False
+        _mode = "browser"
     else:
-        _overlay = _pick_mode()
+        _mode = _pick_mode()
 
-    run(overlay=_overlay)
+    run(overlay=(_mode == "minimap"), esp=(_mode == "esp"))

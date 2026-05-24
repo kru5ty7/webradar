@@ -6,7 +6,10 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('../webapp/dist', 'webapp_dist')],
+    datas=[
+        ('../webapp/dist', 'webapp_dist'),
+        ('F:/workspace/cs2-external-esp/x64/Release/cs2-external-esp.exe', 'esp_bin'),
+    ],
     hiddenimports=[
         'websockets', 'websockets.server', 'websockets.connection',
         'websockets.exceptions', 'websockets.frames', 'websockets.http11',

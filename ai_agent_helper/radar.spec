@@ -1,6 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
 block_cipher = None
+
+_ESP = 'F:/workspace/cs2-external-esp/x64/Release/cs2-external-esp.exe'
+_extra_datas = [(_ESP, 'esp_bin')] if os.path.exists(_ESP) else []
 
 a = Analysis(
     ['main.py'],
@@ -8,7 +12,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('../webapp/dist', 'webapp_dist'),
-        ('F:/workspace/cs2-external-esp/x64/Release/cs2-external-esp.exe', 'esp_bin'),
+        *_extra_datas,
     ],
     hiddenimports=[
         'websockets', 'websockets.server', 'websockets.connection',

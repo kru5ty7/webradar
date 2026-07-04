@@ -10,6 +10,8 @@ import os
 import json
 from pathlib import Path
 
+from platform_utils import find_cs2_root
+
 try:
     import vpk as vpklib
 except ImportError:
@@ -27,26 +29,13 @@ except ImportError:
 
 # ── find CS2 ──────────────────────────────────────────────────────────────────
 def _find_cs2():
-    import winreg
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                            r"SOFTWARE\WOW6432Node\Valve\Steam") as k:
-            steam = Path(winreg.QueryValueEx(k, "InstallPath")[0])
-    except Exception:
-        raise RuntimeError("Steam not found in registry")
-    lf = steam / "steamapps" / "libraryfolders.vdf"
-    roots = [steam / "steamapps"]
-    if lf.exists():
-        for line in lf.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if '"path"' in line.lower():
-                p = line.split('"')[-2].replace("\\\\", "\\")
-                roots.append(Path(p) / "steamapps")
-    for root in roots:
-        cs2 = root / "common" / "Counter-Strike Global Offensive" / "game" / "csgo"
-        if cs2.exists():
-            return cs2
-    raise RuntimeError("CS2 csgo folder not found")
+    cs2 = find_cs2_root()
+    if not cs2:
+        raise RuntimeError("CS2 install not found")
+    csgo = cs2 / "game" / "csgo"
+    if not csgo.exists():
+        raise RuntimeError(f"CS2 csgo folder not found under {cs2}")
+    return csgo
 
 # ── parse overview txt ────────────────────────────────────────────────────────
 def _parse_kv(text: str) -> dict:

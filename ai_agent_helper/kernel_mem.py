@@ -1,4 +1,4 @@
-"""
+r"""
 kernel_mem.py — Python client for the CS2Radar kernel driver.
 
 Replaces the ctypes ReadProcessMemory calls in main.py with DeviceIoControl
@@ -32,6 +32,7 @@ import ctypes
 import ctypes.wintypes as wt
 import struct
 import logging
+import sys
 
 log = logging.getLogger("radar")
 
@@ -62,7 +63,19 @@ MAX_READ_BUFFER = 8192  # must match shared.h
 # ctypes lets us call Windows DLL functions directly from Python.
 # We annotate argtypes/restype so ctypes knows how to marshal the arguments.
 
-_k32 = ctypes.windll.kernel32  # load kernel32.dll (already in every process)
+class _UnavailableWin32Call:
+    def __call__(self, *_args, **_kwargs):
+        raise RuntimeError("KernelMemory is only available on Windows")
+
+
+class _UnavailableKernel32:
+    CreateFileW = _UnavailableWin32Call()
+    DeviceIoControl = _UnavailableWin32Call()
+    CloseHandle = _UnavailableWin32Call()
+    GetLastError = _UnavailableWin32Call()
+
+
+_k32 = ctypes.windll.kernel32 if sys.platform == "win32" else _UnavailableKernel32()
 
 # CreateFileW — opens a file or device by name
 # Returns a HANDLE (opaque integer) or INVALID_HANDLE_VALUE on failure
@@ -132,6 +145,9 @@ class KernelMemory:
 
     def __init__(self, pid: int):
         self._pid = pid
+        self._handle = None
+        if sys.platform != "win32":
+            raise RuntimeError("KernelMemory requires the Windows CS2Radar kernel driver")
 
         # Open a handle to our driver's device.
         # This is identical to opening a file — the kernel routes it to
@@ -149,7 +165,7 @@ class KernelMemory:
         if self._handle == INVALID_HANDLE:
             err = _k32.GetLastError()
             raise RuntimeError(
-                f"Cannot open \\.\CS2Radar (error {err}).  "
+                f"Cannot open \\\\.\\CS2Radar (error {err}).  "
                 f"Is the driver loaded?  Run: sc start CS2Radar"
             )
 

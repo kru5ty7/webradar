@@ -3,5 +3,6 @@
   "m_local_ip": "localhost",
   "m_public_ip": "",
   "auto_update": true,
-  "github_token": ""
+  "github_token": "",
+  "tailscale_funnel": false
 }

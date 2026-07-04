@@ -1,10 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 
 block_cipher = None
+_IS_WINDOWS = sys.platform == 'win32'
 
-_ESP = 'F:/workspace/cs2-external-esp/x64/Release/cs2-external-esp.exe'
-_extra_datas = [(_ESP, 'esp_bin')] if os.path.exists(_ESP) else []
+_ESP = os.environ.get(
+    'ESP_BIN',
+    os.path.abspath(os.path.join('..', 'cs2-external-esp', 'x64', 'Release', 'cs2-external-esp.exe')),
+)
+_extra_datas = [(_ESP, 'esp_bin')] if _IS_WINDOWS and os.path.exists(_ESP) else []
+_webview_platforms = (
+    ['webview.platforms.edgechromium'] if _IS_WINDOWS
+    else ['webview.platforms.gtk', 'webview.platforms.qt']
+)
 
 a = Analysis(
     ['main.py'],
@@ -18,7 +27,7 @@ a = Analysis(
         'websockets', 'websockets.server', 'websockets.connection',
         'websockets.exceptions', 'websockets.frames', 'websockets.http11',
         'websockets.streams', 'websockets.legacy', 'websockets.legacy.server',
-        'webview', 'webview.platforms', 'webview.platforms.edgechromium',
+        'webview', 'webview.platforms', *_webview_platforms,
         'webview.js', 'webview.event', 'webview.util', 'webview.screen',
         'webview.window', 'webview.menu',
     ],
@@ -41,7 +50,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='GameOverlayService',
+    name='GameOverlayService' if _IS_WINDOWS else 'cs2-radar',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -53,6 +62,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    manifest='radar.manifest',
-    uac_admin=True,
+    manifest='radar.manifest' if _IS_WINDOWS else None,
+    uac_admin=_IS_WINDOWS,
 )

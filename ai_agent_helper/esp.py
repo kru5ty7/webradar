@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 log = logging.getLogger("radar")
+IS_WINDOWS = sys.platform == "win32"
 
 
 def _esp_exe_path() -> Path:
@@ -22,6 +23,24 @@ def _esp_exe_path() -> Path:
 
 def start(_url: str = ""):
     """Launch the C++ ESP exe. Blocks until it exits."""
+    if not IS_WINDOWS:
+        from overlay import start as start_overlay
+
+        url = _url or "http://localhost:5173?mode=esp"
+        log.info("esp: using web ESP overlay on %s", sys.platform)
+        print("  Launching web ESP overlay...\n  Close its window or press Ctrl+C to stop.\n")
+        start_overlay(
+            url,
+            width=1280,
+            height=720,
+            x=0,
+            y=0,
+            fullscreen=True,
+            transparent=True,
+            title="CS2Radar ESP",
+        )
+        return
+
     exe = _esp_exe_path()
     if not exe.exists():
         log.error("esp: cs2-external-esp.exe not found at %s", exe)

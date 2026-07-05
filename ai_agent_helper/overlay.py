@@ -138,7 +138,9 @@ def start(url: str, width: int = MINIMAP_W, height: int = MINIMAP_H,
         frameless=True,
         on_top=True,
         transparent=transparent,
-        background_color="#00000000" if transparent else "#0a141e",
+        # background_color must be a 6-digit #RRGGBB triplet — pywebview rejects
+        # 8-digit RGBA (the alpha comes from transparent=True, not this value).
+        background_color="#000000" if transparent else "#0a141e",
         text_select=False,
         zoomable=False,
         fullscreen=fullscreen,

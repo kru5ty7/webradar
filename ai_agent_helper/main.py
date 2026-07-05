@@ -1190,6 +1190,8 @@ class CS2Reader:
         self._last_local_team   = 0   # last known valid team (2=T, 3=CT)
         self._lpc_fallback      = 0   # cached lpc when dwLocalPlayerController offset is wrong (Linux)
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
+        self._linux_vm_addr     = 0   # resolved view-matrix addr (Linux; session-specific, never persisted)
+        self._last_vm_scan      = 0.0 # monotonic time of last view-matrix .bss scan
         # On Linux these may be patched after a live memory scan
         self._entity_chunk_off  = int(self._g.get("_linux_chunk_off", 16))
         self._entity_stride     = int(self._g.get("_linux_entity_stride", 120))
@@ -2089,6 +2091,114 @@ class CS2Reader:
         log.debug("lpc fallback: scanned 1024 slots, found %d controllers", found_any)
         return 0
 
+    # ── view matrix (Linux) ───────────────────────────────────────────────────
+    def _linux_module_bss(self, basenames: tuple) -> tuple[int, int] | None:
+        """Return (start, end) of the anonymous rw- mapping immediately following
+        a module's file-backed segments — i.e. the module's .bss, where static
+        globals like the view matrix live. This region carries no pathname, so a
+        basename filter alone never finds it."""
+        try:
+            maps = Path(f"/proc/{self.mem.pid}/maps").read_text(errors="ignore").splitlines()
+        except Exception:
+            return None
+        mod_end = 0
+        for line in maps:
+            parts = line.split(maxsplit=5)
+            if len(parts) < 5:
+                continue
+            lo, hi = parts[0].split('-')
+            s, e = int(lo, 16), int(hi, 16)
+            perms = parts[1]
+            path  = parts[5] if len(parts) >= 6 else ""
+            bn = _maps_basename(path) if path else ""
+            if bn in basenames:
+                mod_end = e
+            elif mod_end and s == mod_end and perms[:3] == 'rw-' and not path:
+                return (s, e)          # first anonymous rw region right after the module
+            elif mod_end and s > mod_end:
+                mod_end = 0
+        return None
+
+    def _linux_resolve_view_matrix(self, pawn: int) -> int:
+        """Locate the world-to-screen view matrix in libclient.so's .bss on native
+        Linux by validating 16-float candidates against the local player's camera.
+        Like Windows dwViewMatrix it is a static global, but its absolute address
+        is ASLR/session-specific, so it is resolved live and never persisted (same
+        rule as _linux_chunk0_abs). Throttled; returns 0 until a match is found."""
+        if not IS_LINUX or not pawn:
+            return 0
+        now = time.monotonic()
+        if now - self._last_vm_scan < 2.0:
+            return 0
+        self._last_vm_scan = now
+        off_eye = self._off("C_CSPlayerPawn", "m_angEyeAngles")
+        if not off_eye:
+            return 0
+        ex, ey, ez = self._origin(pawn)
+        if not (ex or ey):
+            return 0
+        pitch = self.mem.f32(pawn + off_eye)
+        yaw   = self.mem.f32(pawn + off_eye + 4)
+        eye = (ex, ey, ez + 64.0)
+        cp, sp   = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+        cyw, syw = math.cos(math.radians(yaw)),   math.sin(math.radians(yaw))
+        fwd = (cp * cyw, cp * syw, -sp)
+        rl  = math.hypot(fwd[1], -fwd[0]) or 1.0
+        right = (fwd[1] / rl, -fwd[0] / rl, 0.0)
+        up = (fwd[1] * right[2] - fwd[2] * right[1],
+              fwd[2] * right[0] - fwd[0] * right[2],
+              fwd[0] * right[1] - fwd[1] * right[0])
+        def pt(s, u, d=300.0):
+            return (eye[0] + d * fwd[0] + s * right[0] + u * up[0],
+                    eye[1] + d * fwd[1] + s * right[1] + u * up[1],
+                    eye[2] + d * fwd[2] + s * right[2] + u * up[2])
+        ahead, latp, latm, upp, far = pt(0, 0), pt(200, 0), pt(-200, 0), pt(0, 200), pt(0, 0, 3000)
+
+        region = self._linux_module_bss(_CLIENT_MODULE_BASENAMES)
+        if not region:
+            return 0
+        s, e = region
+        try:
+            raw = self.mem._read(s, e - s)
+        except Exception:
+            return 0
+        if not raw or len(raw) < 64:
+            return 0
+
+        def proj(M, p):   # row-major world -> clip
+            px, py, pz = p
+            return (M[0] * px + M[1] * py + M[2] * pz + M[3],
+                    M[4] * px + M[5] * py + M[6] * pz + M[7],
+                    M[12] * px + M[13] * py + M[14] * pz + M[15])
+
+        for off in range(0, len(raw) - 63, 4):
+            M = struct.unpack_from("<16f", raw, off)
+            if not all(math.isfinite(v) for v in M):
+                continue
+            ac = proj(M, ahead)
+            if abs(ac[2]) < 1:                       # crosshair point must be in front
+                continue
+            ax, ay = ac[0] / ac[2], ac[1] / ac[2]
+            if abs(ax) > 0.12 or abs(ay) > 0.12:     # ...and near screen center
+                continue
+            lp, lm, u, f = proj(M, latp), proj(M, latm), proj(M, upp), proj(M, far)
+            if min(abs(lp[2]), abs(lm[2]), abs(u[2]), abs(f[2])) < 1:
+                continue
+            lpx, lmx = lp[0] / lp[2], lm[0] / lm[2]
+            upy = u[1] / u[2]
+            ratio = abs(f[2] / ac[2])
+            if lpx * lmx >= 0:                        # lateral points flip sign (symmetry)
+                continue
+            if not (0.3 < abs(lpx) < 1.7) or not (0.3 < abs(upy) < 2.3):
+                continue
+            if not (7.0 < ratio < 13.0):             # w grows linearly with distance
+                continue
+            addr = s + off
+            log.info("view matrix resolved via .bss scan @ 0x%X (client+0x%X)",
+                     addr, addr - self.client_base)
+            return addr
+        return 0
+
     # ── main collect loop ─────────────────────────────────────────────────────
     def collect(self) -> dict | None:
         # Re-read entity_system every frame — CS2 can update this pointer
@@ -2211,6 +2321,7 @@ class CS2Reader:
 
         chunk_cache: dict[int, int] = {}
         seen_ctrls: set[int] = set()   # dedupe: a player is reachable via both its controller and pawn
+        local_pawn = 0                 # local player's pawn (for Linux view-matrix resolution)
 
         for idx in range(1024):
             ent = self._entity_ptr(idx, chunk_cache)
@@ -2288,6 +2399,9 @@ class CS2Reader:
                 has_bomb = False
                 if team == 2 and not is_dead and bomb_own_idx:
                     has_bomb = bomb_own_idx == ((h_pawn & ENT_ENTRY_MASK) & 0xFFFF)
+
+                if ctrl == lpc and not is_dead:
+                    local_pawn = pawn   # for Linux view-matrix resolution below
 
                 players.append({
                     "m_idx":        idx,
@@ -2390,6 +2504,26 @@ class CS2Reader:
                                 x, y, _ = self._origin(ent)
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
+
+        if IS_LINUX:
+            # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.
+            # Resolve the matrix from libclient's .bss by validating against the
+            # live camera; cache for the session, and re-resolve if it ever reads
+            # non-finite (CS2 restarted → new ASLR, or the game updated).
+            stale = False
+            if self._linux_vm_addr:
+                chk = self.mem._read(self._linux_vm_addr, 64)
+                if not chk or len(chk) != 64:
+                    stale = True
+                else:
+                    vm = struct.unpack_from("<16f", chk)
+                    if not all(math.isfinite(v) for v in vm) or not any(vm):
+                        stale = True
+            if (not self._linux_vm_addr or stale) and local_pawn:
+                addr = self._linux_resolve_view_matrix(local_pawn)
+                if addr:
+                    self._linux_vm_addr = addr
+            self.view_matrix_addr = self._linux_vm_addr
 
         view_matrix = []
         if self.view_matrix_addr:

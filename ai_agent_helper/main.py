@@ -2109,16 +2109,24 @@ class CS2Reader:
         off_is_local = self._off("CBasePlayerController", "m_bIsLocalPlayerController")
         off_hctrl    = self._off("C_BasePlayerPawn", "m_hController") or self._nv_off("m_hController")
         if not self.entity_system or not (off_is_local or (self.steam_id and off_steam)):
+            log.warning("lpc fallback: skipping scan — entity_system=0x%X off_is_local=%d steam_id=%s off_steam=%d",
+                        self.entity_system, off_is_local, self.steam_id, off_steam)
             return 0
 
         cache: dict[int, int] = {}
         found_any = 0
         flag_hit  = 0
+        # Diagnostic counters (logged at WARNING to be always visible)
+        _diag_ents = 0
+        _diag_names: dict[str, int] = {}
+        _diag_logged = False
         for idx in range(1024):
             ent = self._entity_ptr(idx, cache)
             if not ent:
                 continue
+            _diag_ents += 1
             cls = self._class_name(ent)
+            _diag_names[cls or "<empty>"] = _diag_names.get(cls or "<empty>", 0) + 1
 
             # Direct controller (Windows, and Linux when controllers are listed).
             if cls == "CCSPlayerController":
@@ -2161,7 +2169,11 @@ class CS2Reader:
             self._lpc_fallback = flag_hit
             return flag_hit
 
-        log.debug("lpc fallback: scanned 1024 slots, found %d controllers", found_any)
+        # Always log entity scan summary at WARNING level so it shows up without --debug
+        top_classes = sorted(_diag_names.items(), key=lambda x: -x[1])[:6]
+        log.warning("lpc fallback: %d entity ptrs, %d controllers; class distribution: %s",
+                    _diag_ents, found_any,
+                    " | ".join(f"{n}={c}" for n, c in top_classes) if top_classes else "none")
         return 0
 
     # ── view matrix (Linux) ───────────────────────────────────────────────────

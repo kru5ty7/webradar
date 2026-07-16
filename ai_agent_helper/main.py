@@ -13,6 +13,7 @@ import logging
 import logging.handlers
 import math
 import os
+import re
 import shutil
 import struct
 import sys
@@ -1176,11 +1177,15 @@ def _valid_ptr(p: int) -> bool:
 
 
 class CS2Reader:
-    def __init__(self, mem: Memory, offsets: dict):
+    def __init__(self, mem: Memory, offsets: dict, steam_id: int = 0):
         self.mem      = mem
         self._offsets = offsets          # full dict; needed for correct cache writes
         self._g       = offsets.setdefault("globals", {})
         self._f       = offsets.get("fields", {})
+        # SteamID64 of the local player (config.json / loginusers.vdf). When set,
+        # local-player identification matches m_steamID instead of trusting
+        # m_bIsLocalPlayerController, which false-positives on native Linux CS2.
+        self.steam_id = int(steam_id or 0)
 
         self.client_base        = 0
         self.entity_system      = 0
@@ -1748,17 +1753,33 @@ class CS2Reader:
         # On some builds the exported CreateInterface is a 5-byte `jmp rel32`
         # thunk to the real body; on others (current Linux CS2) the export IS the
         # body. Detect the thunk by its opcode instead of assuming one is present.
-        first_byte = self.mem._read(create_iface_addr, 1)
-        if first_byte and first_byte[0] == 0xE9:          # jmp rel32 thunk
-            body = create_iface_addr + 5 + self.mem.i32(create_iface_addr + 1)
+        body_peek = self.mem._read(create_iface_addr, 128) or b''
+        if body_peek and body_peek[0] == 0xE9:          # jmp rel32 thunk
+            body = create_iface_addr + 5 + struct.unpack_from('<i', body_peek, 1)[0]
+            body_peek = self.mem._read(body, 128) or b''
         else:                                             # export is the body itself
             body = create_iface_addr
-        # The list-head load sits 0x10 bytes into the body: mov reg,[rip+disp32].
-        export_address = body + 0x10
+
+        # Scan forward in the function body for the first `mov reg,[rip+disp32]`
+        # instruction (REX.W 0x8B, ModRM & 0xC7 == 0x05).  The offset into the
+        # body can shift between CS2 updates so we no longer hardcode +0x10.
+        export_address = 0
+        for _bi in range(min(len(body_peek) - 6, 80)):
+            if (body_peek[_bi] in (0x48, 0x4C)
+                    and body_peek[_bi + 1] == 0x8B
+                    and (body_peek[_bi + 2] & 0xC7) == 0x05):
+                export_address = body + _bi
+                log.debug("interface scan: list-head insn at body+%d (body=0x%X)", _bi, body)
+                break
+        if not export_address:
+            log.warning("interface scan: no RIP-relative load in CreateInterface body "
+                        "(first_byte=0x%02X @ 0x%X)", body_peek[0] if body_peek else 0, create_iface_addr)
+            return 0
 
         # interface_entry = *(export_address + 0x07 + *(u32)(export_address + 0x03))
         rel2 = self.mem.i32(export_address + 3)
         interface_entry = self.mem.u64(export_address + 7 + rel2)
+        log.debug("interface scan: list head @ 0x%X  interface_entry=0x%X", export_address + 7 + rel2, interface_entry)
 
         seen: set[int] = set()
         while _valid_ptr(interface_entry):
@@ -1770,25 +1791,44 @@ class CS2Reader:
             if name_ptr:
                 iface_name = self.mem.cstring(name_ptr)
                 if iface_name and iface_name.startswith("GameResourceServiceClientV0"):
-                    # Resolve instance pointer through vtable
+                    # Resolve instance through the factory fn (m_CreateFn at vtable[0]).
+                    # Scan for the first RIP-relative load/lea (48/4C 8B/8D, ModRM & 0xC7 == 0x05)
+                    # rather than hardcoding byte offset 3 — the function prologue can
+                    # gain/lose bytes between CS2 updates.
                     vfunc_addr = self.mem.u64(interface_entry)
-                    rel3 = self.mem.i32(vfunc_addr + 3)
-                    instance = (vfunc_addr + 7 + rel3) & 0xFFFFFFFFFFFFFFFF
-                    # entity system lives at instance + 0x50
-                    es_ptr_addr = instance + 0x50
-                    entity_system = self.mem.u64(es_ptr_addr)
-                    if _valid_ptr(entity_system):
-                        # Cache the slot so collect() can cheaply re-resolve the
-                        # entity system each frame (it can move on map load)
-                        # without ever touching the meaningless Windows RVA.
-                        self._linux_es_ptr_addr = es_ptr_addr
-                        log.info("interface scan: entity system @ 0x%X (via %s)",
-                                 entity_system, iface_name)
-                        return entity_system
+                    vfbytes = self.mem._read(vfunc_addr, 48) or b''
+                    rel3 = 0
+                    vtoff = 0
+                    for _vi in range(min(len(vfbytes) - 6, 32)):
+                        vb0 = vfbytes[_vi]
+                        vb1 = vfbytes[_vi + 1] if _vi + 1 < len(vfbytes) else 0
+                        vb2 = vfbytes[_vi + 2] if _vi + 2 < len(vfbytes) else 0
+                        if vb0 in (0x48, 0x4C) and vb1 in (0x8B, 0x8D) and (vb2 & 0xC7) == 0x05:
+                            rel3 = struct.unpack_from('<i', vfbytes, _vi + 3)[0]
+                            vtoff = _vi
+                            break
+                    instance = (vfunc_addr + vtoff + 7 + rel3) & 0xFFFFFFFFFFFFFFFF
+
+                    # Try offsets 0x48, 0x50, 0x58 — the entity system field may have
+                    # moved within the GRS singleton between CS2 updates.
+                    found_es = 0
+                    found_off = 0
+                    for es_off in (0x50, 0x48, 0x58, 0x60):
+                        cand = self.mem.u64(instance + es_off)
+                        if _valid_ptr(cand):
+                            found_es, found_off = cand, es_off
+                            break
+                    if found_es:
+                        self._linux_es_ptr_addr = instance + found_off
+                        log.info("interface scan: entity system @ 0x%X (via %s, instance+0x%02X vtoff=%d)",
+                                 found_es, iface_name, found_off, vtoff)
+                        return found_es
+                    log.warning("interface scan: %s instance=0x%X has no valid ES ptr at 0x48/0x50/0x58/0x60",
+                                iface_name, instance)
 
             interface_entry = self.mem.u64(interface_entry + 0x10)
 
-        log.warning("interface scan: GameResourceServiceClientV0 not found")
+        log.warning("interface scan: GameResourceServiceClientV0 not found in list (head=0x%X)", interface_entry)
         return 0
 
     def _linux_find_chunk0_direct(self) -> tuple[int, int]:
@@ -2038,14 +2078,29 @@ class CS2Reader:
     # ── local player controller fallback (Linux / wrong dwLocalPlayerController RVA) ──
     def _find_lpc_fallback(self) -> int:
         """
-        Scan the entity list for the CCSPlayerController with
-        m_bIsLocalPlayerController == True.  Used when dwLocalPlayerController
-        is the wrong Windows RVA on native Linux CS2.
-        Caches the result so we only scan once per session.
-        Throttled to once per 2 seconds while not found.
+        Scan the entity list for the local player's controller.  Used when
+        dwLocalPlayerController is the wrong Windows RVA on native Linux CS2.
+
+        Preferred key: m_steamID == self.steam_id (from config.json, auto-
+        detected from loginusers.vdf).  m_bIsLocalPlayerController is only
+        trusted when no steam_id is known — on native Linux it can read true
+        on another player's controller, which flips the radar team colors.
+
+        Caches the result; when a steam_id is known the cache is re-validated
+        each call so entity-slot reuse after a map change triggers a rescan.
+        Throttled to one scan per 2 seconds.
         """
+        off_steam = self._off("CBasePlayerController", "m_steamID")
         if self._lpc_fallback:
-            return self._lpc_fallback
+            if not (self.steam_id and off_steam):
+                return self._lpc_fallback
+            try:
+                if self.mem.u64(self._lpc_fallback + off_steam) == self.steam_id:
+                    return self._lpc_fallback
+            except Exception:
+                pass
+            self._lpc_fallback = 0   # stale — entity recycled on map change
+
         now = time.monotonic()
         if now - self._last_lpc_scan < 2.0:
             return 0
@@ -2053,11 +2108,12 @@ class CS2Reader:
 
         off_is_local = self._off("CBasePlayerController", "m_bIsLocalPlayerController")
         off_hctrl    = self._off("C_BasePlayerPawn", "m_hController") or self._nv_off("m_hController")
-        if not off_is_local or not self.entity_system:
+        if not self.entity_system or not (off_is_local or (self.steam_id and off_steam)):
             return 0
 
         cache: dict[int, int] = {}
         found_any = 0
+        flag_hit  = 0
         for idx in range(1024):
             ent = self._entity_ptr(idx, cache)
             if not ent:
@@ -2079,14 +2135,31 @@ class CS2Reader:
                 continue
 
             found_any += 1
-            try:
-                if self.mem.bool8(controller + off_is_local):
-                    log.info("lpc fallback: local controller found via idx=%d (%s) ctrl=0x%X",
-                             idx, cls, controller)
-                    self._lpc_fallback = controller
-                    return controller
-            except Exception:
-                pass
+            if self.steam_id and off_steam:
+                try:
+                    if self.mem.u64(controller + off_steam) == self.steam_id:
+                        log.info("lpc fallback: local controller matched by steam_id via idx=%d (%s) ctrl=0x%X",
+                                 idx, cls, controller)
+                        self._lpc_fallback = controller
+                        return controller
+                except Exception:
+                    pass
+            if not flag_hit and off_is_local:
+                try:
+                    if self.mem.bool8(controller + off_is_local):
+                        flag_hit = controller
+                except Exception:
+                    pass
+
+        if flag_hit:
+            if self.steam_id:
+                log.warning("lpc fallback: steam_id %d not found among %d controllers — "
+                            "using m_bIsLocalPlayerController instead (verify steam_id in config.json)",
+                            self.steam_id, found_any)
+            else:
+                log.info("lpc fallback: local controller found via flag ctrl=0x%X", flag_hit)
+            self._lpc_fallback = flag_hit
+            return flag_hit
 
         log.debug("lpc fallback: scanned 1024 slots, found %d controllers", found_any)
         return 0
@@ -2268,6 +2341,15 @@ class CS2Reader:
                 self.gvars = gv
 
         lpc = self.mem.ptr(self.lpc_addr)
+        if lpc and self.steam_id:
+            # A wrong (Windows) RVA can still dereference to a plausible pointer
+            # on Linux — accept it only if it is really OUR controller.
+            off_steam_chk = self._off("CBasePlayerController", "m_steamID")
+            try:
+                if off_steam_chk and self.mem.u64(lpc + off_steam_chk) != self.steam_id:
+                    lpc = 0
+            except Exception:
+                lpc = 0
         if not lpc:
             lpc = self._find_lpc_fallback()
             if not lpc:
@@ -2607,12 +2689,72 @@ def load_config() -> dict:
         "m_public_ip": "",
         "auto_update": True,
         "github_token": "",
+        # SteamID64 of the person playing (e.g. "76561198000000000").
+        # Leave empty to auto-detect from Steam's loginusers.vdf.
+        "steam_id": "",
     }
     if CONFIG_FILE.exists():
         saved = json.loads(CONFIG_FILE.read_text())
         return {**default, **saved}
     CONFIG_FILE.write_text(json.dumps(default, indent=2))
     return default
+
+
+def _detect_steam_id() -> int:
+    """Best-effort SteamID64 of the most recently logged-in Steam user,
+    read from Steam's loginusers.vdf."""
+    candidates: list[Path] = []
+    if IS_WINDOWS:
+        for env in ("ProgramFiles(x86)", "ProgramFiles"):
+            base = os.environ.get(env)
+            if base:
+                candidates.append(Path(base) / "Steam" / "config" / "loginusers.vdf")
+    else:
+        homes = [Path.home()]
+        # Under sudo, Path.home() may be /root — also try the invoking user.
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user:
+            homes.append(Path(os.path.expanduser(f"~{sudo_user}")))
+        for h in homes:
+            candidates.append(h / ".local/share/Steam/config/loginusers.vdf")
+            candidates.append(h / ".steam/steam/config/loginusers.vdf")
+
+    for vdf in candidates:
+        try:
+            if not vdf.is_file():
+                continue
+            text = vdf.read_text(errors="ignore")
+            blocks = re.findall(r'"(7656\d{13})"\s*\{(.*?)\}', text, re.S)
+            if not blocks:
+                continue
+            for sid, body in blocks:
+                if re.search(r'"MostRecent"\s*"1"', body):
+                    return int(sid)
+            return int(blocks[0][0])
+        except Exception:
+            continue
+    return 0
+
+
+def _resolve_steam_id(cfg: dict) -> int:
+    """SteamID64 used to identify the local player on the radar.
+    config.json wins; otherwise auto-detect once and persist for next runs."""
+    raw = str(cfg.get("steam_id", "")).strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    sid = _detect_steam_id()
+    if sid:
+        cfg["steam_id"] = str(sid)
+        try:
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        except Exception:
+            log.debug("could not persist steam_id to config.json", exc_info=True)
+        log.info("steam_id auto-detected from loginusers.vdf: %d (saved to config.json)", sid)
+    else:
+        log.warning("steam_id not set and auto-detection failed — falling back to "
+                    "m_bIsLocalPlayerController for local-player detection "
+                    "(set \"steam_id\" in config.json if team colors are wrong)")
+    return sid
 
 
 def _check_for_update(config: dict) -> None:
@@ -3207,7 +3349,8 @@ def _ensure_firewall_rules():
 
 # ── main async loop ───────────────────────────────────────────────────────────
 async def _run_async():
-    load_config()
+    cfg = load_config()
+    steam_id = _resolve_steam_id(cfg)
     _ensure_firewall_rules()
     offsets = load_offsets()
     # Baseline for auto-refresh: the client-module mtime that `offsets` reflects.
@@ -3311,7 +3454,7 @@ async def _run_async():
 
             # ── ensure reader is initialised ──────────────────────────────────
             if reader is None:
-                r = CS2Reader(mem, offsets)
+                r = CS2Reader(mem, offsets, steam_id=steam_id)
                 ok = await loop.run_in_executor(None, r.setup)
                 if not ok:
                     _setup_failures += 1

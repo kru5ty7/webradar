@@ -1197,9 +1197,15 @@ class CS2Reader:
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
         self._linux_vm_addr     = 0   # resolved view-matrix addr (Linux; session-specific, never persisted)
         self._last_vm_scan      = 0.0 # monotonic time of last view-matrix .bss scan
-        # On Linux these may be patched after a live memory scan
-        self._entity_chunk_off  = int(self._g.get("_linux_chunk_off", 16))
-        self._entity_stride     = int(self._g.get("_linux_entity_stride", 120))
+        # On Linux these may be patched after a live memory scan; on Windows the
+        # MSVC binary always uses chunk_off=0x10 and stride=120. Never let Linux-
+        # cached values contaminate a Windows session (and vice-versa).
+        if IS_LINUX:
+            self._entity_chunk_off = int(self._g.get("_linux_chunk_off", 16))
+            self._entity_stride    = int(self._g.get("_linux_entity_stride", 120))
+        else:
+            self._entity_chunk_off = 16   # always 0x10 on Windows
+            self._entity_stride    = 120  # MSVC CEntityIdentity is always 120 bytes
         self._last_es_scan      = 0.0 # monotonic time of last _linux_scan_entity_system call
         # NEVER seed this from the on-disk cache: it is an absolute (ASLR-randomized)
         # runtime address, only valid within the CS2 process that produced it. A value
@@ -1467,8 +1473,8 @@ class CS2Reader:
         log.info("global vars   @ 0x%016X", self.gvars)
 
         # Auto-detect class-name chain offsets; if they changed (CS2 update) this
-        # fixes class-name resolution without requiring a code update.
-        if IS_LINUX and self.entity_system:
+        # fixes class-name resolution on both platforms without a code update.
+        if self.entity_system:
             self._detect_classinfo_offsets()
 
         return True

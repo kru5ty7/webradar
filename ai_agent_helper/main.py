@@ -1999,7 +1999,18 @@ class CS2Reader:
         unk2 = self.mem.ptr(unk1 + self._classinfo_name2_off)
         if not unk2:
             return ""
-        # unk2 is an MSVC std::string object — size at +0x10, data at ptr(unk2) if >= 16
+        # unk2 is a std::string object in game memory.
+        # Linux CS2 is GCC-compiled: _M_p at +0x00, _M_string_length at +0x08, SSO buf at +0x10.
+        # Windows CS2 is MSVC: size at +0x10, data at ptr(+0x00) if len>=16, else inline at +0x00.
+        if IS_LINUX:
+            data_ptr = self.mem.ptr(unk2)       # _M_p (SSO → unk2+0x10; heap → heap addr)
+            if data_ptr:
+                gcc_sz = self.mem.u64(unk2 + 0x08)  # _M_string_length
+                if 0 < gcc_sz <= 256:
+                    s = self.mem.cstring(data_ptr)
+                    if s:
+                        return s[:gcc_sz]
+            return ""
         sz = self.mem.u32(unk2 + 0x10)
         if sz == 0 or sz > 256:
             return ""
@@ -2027,13 +2038,25 @@ class CS2Reader:
         def _try_string(addr: int) -> str:
             if not addr:
                 return ""
-            sz = self.mem.u32(addr + 0x10)
-            if sz == 0 or sz > 64:
-                return ""
-            if sz < 16:
-                return self.mem.cstring(addr) or ""
-            heap = self.mem.ptr(addr)
-            return (self.mem.cstring(heap) or "") if heap else ""
+            # Try GCC libstdc++ std::string layout first (Linux CS2):
+            #   +0x00 = _M_p (data ptr; SSO strings: = addr+0x10)
+            #   +0x08 = _M_string_length (size_t)
+            #   +0x10 = SSO local buf (15 chars) or allocated_capacity
+            data_ptr = self.mem.ptr(addr)
+            if data_ptr:
+                gcc_sz = self.mem.u64(addr + 0x08)
+                if 0 < gcc_sz <= 64:
+                    s = self.mem.cstring(data_ptr) or ""
+                    if s:
+                        return s[:gcc_sz]
+            # MSVC std::string fallback: size at +0x10, data inline (<16) or at ptr(+0x00)
+            msvc_sz = self.mem.u32(addr + 0x10)
+            if 0 < msvc_sz <= 64:
+                if msvc_sz < 16:
+                    return self.mem.cstring(addr) or ""
+                heap = self.mem.ptr(addr)
+                return (self.mem.cstring(heap) or "") if heap else ""
+            return ""
 
         def _looks_like_class(s: str) -> bool:
             return bool(s) and 3 <= len(s) <= 48 and s[0] == 'C' and s.replace('_', '').isalnum()
@@ -2243,6 +2266,40 @@ class CS2Reader:
         log.warning("lpc fallback: %d entity ptrs, %d controllers; class distribution: %s",
                     _diag_ents, found_any,
                     " | ".join(f"{n}={c}" for n, c in top_classes) if top_classes else "none")
+
+        # Last resort: avitran-style direct controller slot scan (slots 1-64 = controller slots).
+        # Bypasses class-name lookup entirely. Formula mirrors get_client_entity() in cs2-radar.
+        if IS_LINUX and self.entity_system and (self.steam_id and off_steam or off_is_local):
+            try:
+                chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
+                if _valid_ptr(chunk0):
+                    flag_hit2 = 0
+                    for slot in range(1, 65):
+                        ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
+                        if not ctrl:
+                            continue
+                        if self.steam_id and off_steam:
+                            try:
+                                if self.mem.u64(ctrl + off_steam) == self.steam_id:
+                                    log.info("lpc direct-slot: local controller by steam_id slot=%d ctrl=0x%X",
+                                             slot, ctrl)
+                                    self._lpc_fallback = ctrl
+                                    return ctrl
+                            except Exception:
+                                pass
+                        if not flag_hit2 and off_is_local:
+                            try:
+                                if self.mem.bool8(ctrl + off_is_local):
+                                    flag_hit2 = ctrl
+                            except Exception:
+                                pass
+                    if flag_hit2:
+                        log.info("lpc direct-slot: local controller via flag ctrl=0x%X", flag_hit2)
+                        self._lpc_fallback = flag_hit2
+                        return flag_hit2
+            except Exception as e:
+                log.debug("lpc direct-slot scan failed: %s", e)
+
         return 0
 
     # ── view matrix (Linux) ───────────────────────────────────────────────────

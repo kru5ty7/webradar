@@ -1,10 +1,18 @@
 """Find m_angEyeAngles offset by scanning the schema metadata in client.dll."""
 import struct
+import sys
+from pathlib import Path
 
-DLL = r"D:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\bin\win64\client.dll"
+from platform_utils import find_client_binary
+
+DLL = find_client_binary()
+if not DLL:
+    sys.exit("client module not found; set CS2_DIR or install CS2 through Steam")
 TARGET = b"m_angEyeAngles\x00"
 
-data = open(DLL, "rb").read()
+data = Path(DLL).read_bytes()
+if data[:2] != b"MZ":
+    sys.exit(f"{Path(DLL).name} is not a PE client.dll; field scanning is unavailable for native Linux clients")
 
 # Parse PE sections for RVA->raw conversion
 pe = struct.unpack_from("<I", data, 0x3C)[0]

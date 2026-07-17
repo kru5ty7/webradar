@@ -1,2 +1,5 @@
 websockets>=12.0
 pywebview>=4.4
+Pillow>=10.0
+lz4>=4.3
+vpk>=1.4

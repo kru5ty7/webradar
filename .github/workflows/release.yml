@@ -32,9 +32,10 @@ jobs:
 
       - name: Stamp version
         shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          "VERSION = `"$tag`"" | Out-File -FilePath ai_agent_helper/version.py -Encoding utf8NoBOM
+          "VERSION = `"$env:TAG`"" | Out-File -FilePath ai_agent_helper/version.py -Encoding utf8NoBOM
 
       - name: Build exe
         run: cd ai_agent_helper && pyinstaller radar.spec --noconfirm
@@ -74,11 +75,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python deps
-        run: pip install pyinstaller websockets pywebview Pillow lz4 vpk pygobject
+        run: pip install pyinstaller websockets pywebview Pillow lz4 vpk "pygobject<3.50"
 
       - name: Stamp version
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          echo "VERSION = \"${{ github.ref_name }}\"" > ai_agent_helper/version.py
+          echo "VERSION = \"$TAG\"" > ai_agent_helper/version.py
 
       - name: Build binary
         run: cd ai_agent_helper && pyinstaller radar.spec --noconfirm

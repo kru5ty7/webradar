@@ -6,35 +6,29 @@ on:
       - 'v*'
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: webapp/package-lock.json
 
       - name: Build frontend
-        run: |
-          cd webapp
-          npm install
-          npm run build
+        run: cd webapp && npm install && npm run build
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python deps
-        run: pip install pyinstaller websockets pywebview
+        run: pip install pyinstaller websockets pywebview Pillow lz4 vpk
 
       - name: Stamp version
         shell: pwsh
@@ -43,13 +37,79 @@ jobs:
           "VERSION = `"$tag`"" | Out-File -FilePath ai_agent_helper/version.py -Encoding utf8NoBOM
 
       - name: Build exe
-        run: |
-          cd ai_agent_helper
-          pyinstaller radar.spec --noconfirm
+        run: cd ai_agent_helper && pyinstaller radar.spec --noconfirm
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: ai_agent_helper/dist/GameOverlayService.exe
+          name: windows-binary
+          path: ai_agent_helper/dist/GameOverlayService.exe
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Build frontend
+        run: cd webapp && npm install && npm run build
+
+      - name: Install system deps for pywebview
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgirepository1.0-dev libcairo2-dev pkg-config python3-dev \
+            gir1.2-gtk-3.0 gir1.2-webkit2-4.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: pip install pyinstaller websockets pywebview Pillow lz4 vpk pygobject
+
+      - name: Stamp version
+        run: |
+          echo "VERSION = \"${{ github.ref_name }}\"" > ai_agent_helper/version.py
+
+      - name: Build binary
+        run: cd ai_agent_helper && pyinstaller radar.spec --noconfirm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: ai_agent_helper/dist/cs2-radar-linux
+          if-no-files-found: error
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binary
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/GameOverlayService.exe
+            dist/cs2-radar-linux
           generate_release_notes: true
           fail_on_unmatched_files: true

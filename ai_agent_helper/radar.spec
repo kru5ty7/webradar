@@ -50,7 +50,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='GameOverlayService' if _IS_WINDOWS else 'cs2-radar',
+    name='GameOverlayService' if _IS_WINDOWS else 'cs2-radar-linux',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

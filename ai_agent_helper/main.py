@@ -1209,6 +1209,10 @@ class CS2Reader:
         self._linux_chunk0_abs  = 0
         self._linux_es_ptr_addr = 0   # addr holding the CGameEntitySystem ptr (instance+0x50)
         self._nv                = {}   # live-scanned schema field offsets {name: off} (Linux)
+        # Class-name chain offsets — auto-detected at startup via _detect_classinfo_offsets
+        self._classinfo_id_off    = _IDENTITY_CLASS_OFF    # CEntityIdentity → CSchemaClassInfo*
+        self._classinfo_name1_off = _CLASSINFO_NAME1_OFF   # CSchemaClassInfo → intermediate ptr
+        self._classinfo_name2_off = _CLASSINFO_NAME2_OFF   # intermediate → name std::string*
 
     def _nv_off(self, name: str, fallback: int = 0) -> int:
         """Live-scanned schema offset by field name, else a fallback."""
@@ -1459,6 +1463,12 @@ class CS2Reader:
         log.info("client.dll    @ 0x%016X", self.client_base)
         log.info("entity system @ 0x%016X", self.entity_system)
         log.info("global vars   @ 0x%016X", self.gvars)
+
+        # Auto-detect class-name chain offsets; if they changed (CS2 update) this
+        # fixes class-name resolution without requiring a code update.
+        if IS_LINUX and self.entity_system:
+            self._detect_classinfo_offsets()
+
         return True
 
     # ── entity list ───────────────────────────────────────────────────────────
@@ -1980,13 +1990,13 @@ class CS2Reader:
         m_idx = self.mem.u32(identity + _IDENTITY_IDX_OFF)
         if (m_idx & ENT_ENTRY_MASK) == ENT_ENTRY_MASK:
             return ""
-        class_info = self.mem.ptr(identity + _IDENTITY_CLASS_OFF)
+        class_info = self.mem.ptr(identity + self._classinfo_id_off)
         if not class_info:
             return ""
-        unk1 = self.mem.ptr(class_info + _CLASSINFO_NAME1_OFF)
+        unk1 = self.mem.ptr(class_info + self._classinfo_name1_off)
         if not unk1:
             return ""
-        unk2 = self.mem.ptr(unk1 + _CLASSINFO_NAME2_OFF)
+        unk2 = self.mem.ptr(unk1 + self._classinfo_name2_off)
         if not unk2:
             return ""
         # unk2 is an MSVC std::string object — size at +0x10, data at ptr(unk2) if >= 16
@@ -1997,6 +2007,65 @@ class CS2Reader:
             return self.mem.cstring(unk2)
         heap = self.mem.ptr(unk2)
         return self.mem.cstring(heap) if heap else ""
+
+    def _detect_classinfo_offsets(self) -> bool:
+        """Auto-detect class-name chain offsets by finding 'CWorld' on the world entity.
+
+        Scans identity offsets for class_info, then scans class_info for the two-level
+        pointer chain that ends in a std::string containing the class name.
+        Updates self._classinfo_id_off / _name1_off / _name2_off on success.
+        """
+        cache: dict[int, int] = {}
+        ent = self._entity_ptr(0, cache)   # slot 0 = world entity, always present
+        if not ent:
+            return False
+        off_pent = self._off("CEntityInstance", "m_pEntity", 0x10)
+        identity = self.mem.ptr(ent + off_pent)
+        if not identity:
+            return False
+
+        def _try_string(addr: int) -> str:
+            if not addr:
+                return ""
+            sz = self.mem.u32(addr + 0x10)
+            if sz == 0 or sz > 64:
+                return ""
+            if sz < 16:
+                return self.mem.cstring(addr) or ""
+            heap = self.mem.ptr(addr)
+            return (self.mem.cstring(heap) or "") if heap else ""
+
+        def _looks_like_class(s: str) -> bool:
+            return bool(s) and 3 <= len(s) <= 48 and s[0] == 'C' and s.replace('_', '').isalnum()
+
+        # Scan identity for class_info pointer (expected at 0x08, but try nearby)
+        for id_off in range(0x00, 0x40, 8):
+            class_info = self.mem.ptr(identity + id_off)
+            if not class_info:
+                continue
+            # 2-level indirection: class_info → unk1 → unk2 (std::string)
+            for off1 in range(0x00, 0x200, 8):
+                unk1 = self.mem.ptr(class_info + off1)
+                if not unk1:
+                    continue
+                for off2 in range(0x00, 0x40, 8):
+                    unk2 = self.mem.ptr(unk1 + off2)
+                    if not unk2:
+                        continue
+                    s = _try_string(unk2)
+                    if s == "CWorld":
+                        self._classinfo_id_off    = id_off
+                        self._classinfo_name1_off = off1
+                        self._classinfo_name2_off = off2
+                        log.info("classinfo offsets auto-detected: id=0x%02X name1=0x%X name2=0x%02X → %r",
+                                 id_off, off1, off2, s)
+                        return True
+                    # Keep going — don't stop on a plausible-but-wrong hit
+
+        log.warning("classinfo offset scan: could not find 'CWorld' — class names unavailable; "
+                    "old offsets id=0x%02X name1=0x%X name2=0x%02X",
+                    self._classinfo_id_off, self._classinfo_name1_off, self._classinfo_name2_off)
+        return False
 
     # ── scene origin ──────────────────────────────────────────────────────────
     def _origin(self, entity_ptr: int) -> tuple[float, float, float]:

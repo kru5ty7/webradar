@@ -1,6 +1,15 @@
 @echo off
 cd /d "%~dp0"
 
+:: Admin check — ReadProcessMemory requires elevated privileges
+net session >nul 2>&1
+if errorlevel 1 (
+    echo [error] This script must be run as Administrator.
+    echo         Right-click run.bat and choose "Run as administrator".
+    pause
+    exit /b 1
+)
+
 where python >nul 2>&1
 if errorlevel 1 (
     echo [error] Python not found. Install from https://python.org
@@ -8,14 +17,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-pip show websocket-client >nul 2>&1
+pip show websockets >nul 2>&1
 if errorlevel 1 (
-    echo [info] installing dependencies...
+    echo [info] Installing dependencies...
     pip install -r requirements.txt
 )
 
 echo.
-echo  CS2 WebRadar — Mode Selection
+echo  CS2 WebRadar -- Mode Selection
 echo  ==============================
 echo  1. Normal   (browser tab, no overlay)
 echo  2. Minimap  (small draggable overlay window)

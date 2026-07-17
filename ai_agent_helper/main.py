@@ -1213,6 +1213,8 @@ class CS2Reader:
         self._classinfo_id_off    = _IDENTITY_CLASS_OFF    # CEntityIdentity → CSchemaClassInfo*
         self._classinfo_name1_off = _CLASSINFO_NAME1_OFF   # CSchemaClassInfo → intermediate ptr
         self._classinfo_name2_off = _CLASSINFO_NAME2_OFF   # intermediate → name std::string*
+        self._classnames_available  = False  # set True when classinfo offsets are confirmed working
+        self._classinfo_charptr_mode = False  # True when name is char* at unk1+off2 (not ptr-to-string)
 
     def _nv_off(self, name: str, fallback: int = 0) -> int:
         """Live-scanned schema offset by field name, else a fallback."""
@@ -1996,12 +1998,15 @@ class CS2Reader:
         unk1 = self.mem.ptr(class_info + self._classinfo_name1_off)
         if not unk1:
             return ""
+        if self._classinfo_charptr_mode:
+            # name is a const char* stored inline at unk1 + name2_off (no extra dereference)
+            return self.mem.cstring(unk1 + self._classinfo_name2_off) or ""
         unk2 = self.mem.ptr(unk1 + self._classinfo_name2_off)
         if not unk2:
             return ""
-        # unk2 is a std::string object in game memory.
-        # Linux CS2 is GCC-compiled: _M_p at +0x00, _M_string_length at +0x08, SSO buf at +0x10.
-        # Windows CS2 is MSVC: size at +0x10, data at ptr(+0x00) if len>=16, else inline at +0x00.
+        # unk2 is a std::string object (or char*) in game memory.
+        # Linux CS2 (GCC): _M_p at +0x00, _M_string_length at +0x08, SSO buf at +0x10.
+        # Windows CS2 (MSVC): size at +0x10, data at ptr(+0x00) if len>=16, else inline.
         if IS_LINUX:
             data_ptr = self.mem.ptr(unk2)       # _M_p (SSO → unk2+0x10; heap → heap addr)
             if data_ptr:
@@ -2010,7 +2015,8 @@ class CS2Reader:
                     s = self.mem.cstring(data_ptr)
                     if s:
                         return s[:gcc_sz]
-            return ""
+            # Fallback: unk2 might itself be a char*
+            return self.mem.cstring(unk2) or ""
         sz = self.mem.u32(unk2 + 0x10)
         if sz == 0 or sz > 256:
             return ""
@@ -2072,16 +2078,31 @@ class CS2Reader:
                 if not unk1:
                     continue
                 for off2 in range(0x00, 0x40, 8):
+                    # Case A: pointer-to-string at unk1+off2 (ptr to GCC std::string or char*)
                     unk2 = self.mem.ptr(unk1 + off2)
-                    if not unk2:
-                        continue
-                    s = _try_string(unk2)
-                    if s == "CWorld":
+                    if unk2:
+                        s = _try_string(unk2)
+                        if not s:
+                            s = self.mem.cstring(unk2) or ""   # treat unk2 as char* directly
+                        if s == "CWorld":
+                            self._classinfo_id_off    = id_off
+                            self._classinfo_name1_off = off1
+                            self._classinfo_name2_off = off2
+                            self._classnames_available   = True
+                            self._classinfo_charptr_mode = False
+                            log.info("classinfo offsets auto-detected: id=0x%02X name1=0x%X name2=0x%02X → %r",
+                                     id_off, off1, off2, s)
+                            return True
+                    # Case B: name IS the cstring inline at unk1+off2 (const char* field)
+                    s2 = self.mem.cstring(unk1 + off2) or ""
+                    if s2 == "CWorld":
                         self._classinfo_id_off    = id_off
                         self._classinfo_name1_off = off1
                         self._classinfo_name2_off = off2
-                        log.info("classinfo offsets auto-detected: id=0x%02X name1=0x%X name2=0x%02X → %r",
-                                 id_off, off1, off2, s)
+                        self._classnames_available   = True
+                        self._classinfo_charptr_mode = True   # name is char* inline, no extra deref
+                        log.info("classinfo offsets auto-detected (char* mode): id=0x%02X name1=0x%X name2=0x%02X → %r",
+                                 id_off, off1, off2, s2)
                         return True
                     # Keep going — don't stop on a plausible-but-wrong hit
 
@@ -2724,6 +2745,78 @@ class CS2Reader:
                                 x, y, _ = self._origin(ent)
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
+
+        # Direct-slot player fallback — used when class names are unavailable (Linux CS2
+        # build post-14168 where classinfo chain offsets haven't been resolved yet).
+        # Iterates entity slots 1-64 as player controllers, bypassing class name lookup.
+        if IS_LINUX and not self._classnames_available and not players and off_hpawn:
+            try:
+                chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
+                if _valid_ptr(chunk0):
+                    for slot in range(1, 65):
+                        ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
+                        if not ctrl or ctrl in seen_ctrls:
+                            continue
+                        team = self.mem.u32(ctrl + off_team_) if off_team_ else 0
+                        if team not in (2, 3):
+                            continue
+                        h_pawn = self.mem.u32(ctrl + off_hpawn)
+                        if h_pawn == INVALID_EHANDLE:
+                            continue
+                        pawn = self._entity_by_handle(h_pawn, chunk_cache)
+                        if not pawn:
+                            continue
+                        seen_ctrls.add(ctrl)
+
+                        health  = self.mem.i32(pawn + off_health) if off_health else 0
+                        is_dead = health <= 0
+                        x, y, z = self._origin(pawn)
+                        eye_yaw  = self.mem.f32(pawn + off_eye + 4) if off_eye else 0.0
+                        steam_id = self.mem.u64(ctrl + off_steam) if off_steam else 0
+                        armor    = self.mem.i32(pawn + off_armor) if off_armor else 0
+                        pname    = self._read_utl_string(ctrl + off_name) if off_name else ""
+                        color = 5
+                        if off_color:
+                            c = self.mem.u32(ctrl + off_color)
+                            color = c if c != 0xFFFFFFFF else 5
+                        money = 0
+                        if off_money_s and off_money:
+                            ms = self.mem.ptr(ctrl + off_money_s)
+                            if ms:
+                                money = self.mem.i32(ms + off_money)
+                        has_helmet = has_defuser = False
+                        if off_isvc:
+                            isvc = self.mem.ptr(pawn + off_isvc)
+                            if isvc:
+                                has_helmet  = self.mem.bool8(isvc + off_helmet)  if off_helmet  else False
+                                has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
+                        weapons  = self._read_weapons(pawn, chunk_cache)
+                        has_bomb = False
+                        if team == 2 and not is_dead and bomb_own_idx:
+                            has_bomb = bomb_own_idx == ((h_pawn & ENT_ENTRY_MASK) & 0xFFFF)
+                        if ctrl == lpc and not is_dead:
+                            local_pawn = pawn
+                        players.append({
+                            "m_idx":        slot,
+                            "m_name":       pname,
+                            "m_color":      color,
+                            "m_team":       team,
+                            "m_health":     health,
+                            "m_is_dead":    is_dead,
+                            "m_is_local":   (ctrl == lpc),
+                            "m_model_name": "",
+                            "m_steam_id":   str(steam_id),
+                            "m_money":      money,
+                            "m_armor":      armor,
+                            "m_position":   {"x": x, "y": y, "z": z},
+                            "m_eye_angle":  eye_yaw,
+                            "m_has_helmet": has_helmet,
+                            "m_has_defuser":has_defuser,
+                            "m_weapons":    weapons,
+                            "m_has_bomb":   has_bomb,
+                        })
+            except Exception as e:
+                log.debug("direct-slot player collection failed: %s", e)
 
         if IS_LINUX:
             # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.

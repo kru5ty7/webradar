@@ -3042,6 +3042,8 @@ def _check_for_update(config: dict) -> None:
                 found = next((a for a in linux_assets if a["name"].lower().endswith(ext)), None)
                 if found:
                     return found
+            if linux_assets:
+                return linux_assets[0]
         return None
 
     exe_asset = _pick_asset()

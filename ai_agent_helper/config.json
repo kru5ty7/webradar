@@ -3,5 +3,7 @@
   "m_local_ip": "localhost",
   "m_public_ip": "",
   "auto_update": true,
-  "github_token": ""
+  "github_token": "",
+  "steam_id": "76561198855080584",
+  "tailscale_funnel": false
 }

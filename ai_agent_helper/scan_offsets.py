@@ -1,8 +1,11 @@
-import struct, json, time
+import struct, json, time, sys
 from pathlib import Path
+from platform_utils import find_client_binary
 
-DLL = r"D:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\bin\win64\client.dll"
 CACHE = Path(__file__).parent / "offsets_cache.json"
+DLL = find_client_binary()
+if not DLL:
+    sys.exit("client module not found; set CS2_DIR or install CS2 through Steam")
 
 # sig: 3-byte opcode prefix for a RIP-relative MOV, context bytes at +7 to reduce false matches
 SIGS = {
@@ -12,7 +15,9 @@ SIGS = {
     "dwViewMatrix":            (b"\x48\x8D\x0D", b"\x48\xC1\xE0\x06"),
 }
 
-data = open(DLL, "rb").read()
+data = Path(DLL).read_bytes()
+if data[:2] != b"MZ":
+    sys.exit(f"{Path(DLL).name} is not a PE client.dll; local signature scanning is unavailable for native Linux clients")
 pe   = struct.unpack_from("<I", data, 0x3C)[0]
 ns   = struct.unpack_from("<H", data, pe + 6)[0]
 os_  = struct.unpack_from("<H", data, pe + 20)[0]

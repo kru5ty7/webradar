@@ -113,9 +113,18 @@ fi
 BACKEND_ARGS+=("${BACKEND_EXTRA_ARGS[@]}")
 
 BACKEND_CMD=("$PYTHON_BIN" "$BACKEND_DIR/main.py" "${BACKEND_ARGS[@]}")
+NEED_SUDO=0
 if [[ "${NO_SUDO:-0}" != "1" && "$(id -u)" -ne 0 ]]; then
   require_cmd sudo
-  BACKEND_CMD=(sudo -E "${BACKEND_CMD[@]}")
+  NEED_SUDO=1
+  # Pre-authenticate interactively so the password prompt is visible.
+  # After this, sudo -n (non-interactive) is used to background the backend.
+  echo "[sudo] The backend reads CS2 memory and needs root access."
+  if ! sudo -v; then
+    echo "[error] sudo authentication failed — exiting"
+    exit 1
+  fi
+  BACKEND_CMD=(sudo -n "${BACKEND_CMD[@]}")
 fi
 
 trap cleanup EXIT INT TERM

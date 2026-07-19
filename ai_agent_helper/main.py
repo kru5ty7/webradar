@@ -2296,7 +2296,7 @@ class CS2Reader:
 
         # Last resort: avitran-style direct controller slot scan (slots 1-64 = controller slots).
         # Bypasses class-name lookup entirely. Formula mirrors get_client_entity() in cs2-radar.
-        if self.entity_system and (self.steam_id and off_steam or off_is_local):
+        if IS_LINUX and self.entity_system and (self.steam_id and off_steam or off_is_local):
             try:
                 chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
                 if _valid_ptr(chunk0):
@@ -2326,6 +2326,37 @@ class CS2Reader:
                         return flag_hit2
             except Exception as e:
                 log.debug("lpc direct-slot scan failed: %s", e)
+
+        elif not IS_LINUX and self.entity_system and (self.steam_id and off_steam or off_is_local):
+            try:
+                chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
+                if _valid_ptr(chunk0):
+                    flag_hit2 = 0
+                    for slot in range(1, 65):
+                        ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
+                        if not ctrl:
+                            continue
+                        if self.steam_id and off_steam:
+                            try:
+                                if self.mem.u64(ctrl + off_steam) == self.steam_id:
+                                    log.info("lpc direct-slot (win): local controller by steam_id slot=%d ctrl=0x%X",
+                                             slot, ctrl)
+                                    self._lpc_fallback = ctrl
+                                    return ctrl
+                            except Exception:
+                                pass
+                        if not flag_hit2 and off_is_local:
+                            try:
+                                if self.mem.bool8(ctrl + off_is_local):
+                                    flag_hit2 = ctrl
+                            except Exception:
+                                pass
+                    if flag_hit2:
+                        log.info("lpc direct-slot (win): local controller via flag ctrl=0x%X", flag_hit2)
+                        self._lpc_fallback = flag_hit2
+                        return flag_hit2
+            except Exception as e:
+                log.debug("lpc direct-slot scan (win) failed: %s", e)
 
         return 0
 
@@ -2752,10 +2783,10 @@ class CS2Reader:
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
 
-        # Direct-slot player fallback — used when class names are unavailable (classinfo
-        # chain offsets not yet resolved). Iterates entity slots 1-64 as player controllers,
-        # bypassing class name lookup entirely.
-        if not self._classnames_available and not players and off_hpawn:
+        # Direct-slot player fallback — used when class names are unavailable (Linux CS2
+        # build post-14168 where classinfo chain offsets haven't been resolved yet).
+        # Iterates entity slots 1-64 as player controllers, bypassing class name lookup.
+        if IS_LINUX and not self._classnames_available and not players and off_hpawn:
             try:
                 chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
                 if _valid_ptr(chunk0):
@@ -2823,6 +2854,75 @@ class CS2Reader:
                         })
             except Exception as e:
                 log.debug("direct-slot player collection failed: %s", e)
+
+        elif not IS_LINUX and not self._classnames_available and not players and off_hpawn:
+            try:
+                chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
+                if _valid_ptr(chunk0):
+                    for slot in range(1, 65):
+                        ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
+                        if not ctrl or ctrl in seen_ctrls:
+                            continue
+                        team = self.mem.u32(ctrl + off_team_) if off_team_ else 0
+                        if team not in (2, 3):
+                            continue
+                        h_pawn = self.mem.u32(ctrl + off_hpawn)
+                        if h_pawn == INVALID_EHANDLE:
+                            continue
+                        pawn = self._entity_by_handle(h_pawn, chunk_cache)
+                        if not pawn:
+                            continue
+                        seen_ctrls.add(ctrl)
+
+                        health  = self.mem.i32(pawn + off_health) if off_health else 0
+                        is_dead = health <= 0
+                        x, y, z = self._origin(pawn)
+                        eye_yaw  = self.mem.f32(pawn + off_eye + 4) if off_eye else 0.0
+                        steam_id = self.mem.u64(ctrl + off_steam) if off_steam else 0
+                        armor    = self.mem.i32(pawn + off_armor) if off_armor else 0
+                        pname    = self._read_utl_string(ctrl + off_name) if off_name else ""
+                        color = 5
+                        if off_color:
+                            c = self.mem.u32(ctrl + off_color)
+                            color = c if c != 0xFFFFFFFF else 5
+                        money = 0
+                        if off_money_s and off_money:
+                            ms = self.mem.ptr(ctrl + off_money_s)
+                            if ms:
+                                money = self.mem.i32(ms + off_money)
+                        has_helmet = has_defuser = False
+                        if off_isvc:
+                            isvc = self.mem.ptr(pawn + off_isvc)
+                            if isvc:
+                                has_helmet  = self.mem.bool8(isvc + off_helmet)  if off_helmet  else False
+                                has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
+                        weapons  = self._read_weapons(pawn, chunk_cache)
+                        has_bomb = False
+                        if team == 2 and not is_dead and bomb_own_idx:
+                            has_bomb = bomb_own_idx == ((h_pawn & ENT_ENTRY_MASK) & 0xFFFF)
+                        if ctrl == lpc and not is_dead:
+                            local_pawn = pawn
+                        players.append({
+                            "m_idx":        slot,
+                            "m_name":       pname,
+                            "m_color":      color,
+                            "m_team":       team,
+                            "m_health":     health,
+                            "m_is_dead":    is_dead,
+                            "m_is_local":   (ctrl == lpc),
+                            "m_model_name": "",
+                            "m_steam_id":   str(steam_id),
+                            "m_money":      money,
+                            "m_armor":      armor,
+                            "m_position":   {"x": x, "y": y, "z": z},
+                            "m_eye_angle":  eye_yaw,
+                            "m_has_helmet": has_helmet,
+                            "m_has_defuser":has_defuser,
+                            "m_weapons":    weapons,
+                            "m_has_bomb":   has_bomb,
+                        })
+            except Exception as e:
+                log.debug("direct-slot player collection (win) failed: %s", e)
 
         if IS_LINUX:
             # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.

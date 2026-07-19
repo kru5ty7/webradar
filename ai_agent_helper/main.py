@@ -2296,7 +2296,7 @@ class CS2Reader:
 
         # Last resort: avitran-style direct controller slot scan (slots 1-64 = controller slots).
         # Bypasses class-name lookup entirely. Formula mirrors get_client_entity() in cs2-radar.
-        if IS_LINUX and self.entity_system and (self.steam_id and off_steam or off_is_local):
+        if self.entity_system and (self.steam_id and off_steam or off_is_local):
             try:
                 chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
                 if _valid_ptr(chunk0):
@@ -2752,10 +2752,10 @@ class CS2Reader:
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
 
-        # Direct-slot player fallback — used when class names are unavailable (Linux CS2
-        # build post-14168 where classinfo chain offsets haven't been resolved yet).
-        # Iterates entity slots 1-64 as player controllers, bypassing class name lookup.
-        if IS_LINUX and not self._classnames_available and not players and off_hpawn:
+        # Direct-slot player fallback — used when class names are unavailable (classinfo
+        # chain offsets not yet resolved). Iterates entity slots 1-64 as player controllers,
+        # bypassing class name lookup entirely.
+        if not self._classnames_available and not players and off_hpawn:
             try:
                 chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
                 if _valid_ptr(chunk0):

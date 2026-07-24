@@ -42,7 +42,7 @@ const Radar = ({
         />
       ))}
 
-      {bombData && (
+      {bombData && bombData.x !== undefined && (
         <Bomb
           bombData={bombData}
           mapData={mapData}

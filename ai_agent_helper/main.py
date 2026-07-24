@@ -1192,6 +1192,10 @@ class CS2Reader:
         self.gvars              = 0
         self.lpc_addr           = 0   # address of local player controller pointer
         self._bomb_own_idx      = 0   # persisted across frames
+        self._hi_ptrs           = {}  # chunk -> [512 entity ptrs] from last hi-slot sweep
+        self._hi_targets        = {}  # idx -> (entity_ptr, class_name) for slots >= 1024
+        self._hi_tick           = 0   # hi-slot sweep runs every 3rd frame
+        self._last_hi_log       = 0.0 # monotonic time of last hi-slot census log
         self._last_local_team   = 0   # last known valid team (2=T, 3=CT)
         self._lpc_fallback      = 0   # cached lpc when dwLocalPlayerController offset is wrong (Linux)
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
@@ -2031,6 +2035,55 @@ class CS2Reader:
         heap = self.mem.ptr(unk2)
         return self.mem.cstring(heap) if heap else ""
 
+    # ── high-slot entity discovery ────────────────────────────────────────────
+    _HI_CHUNKS = 16   # sweep entity slots 1024..8191 (chunks 2..15)
+
+    def _hi_sweep(self):
+        """Discover bomb / planted-C4 / grenade entities at slots >= 1024.
+
+        The per-frame walk only covers slots 0..1023, but servers allocate
+        dynamic entities (weapons, projectiles, planted C4) above that range.
+        One bulk read per chunk; class names are resolved only for slots whose
+        entity pointer changed since the previous sweep, so steady-state cost
+        is a handful of reads. Results land in self._hi_targets.
+        """
+        if not self.entity_system:
+            return
+        st = self._entity_stride
+        for chunk in range(2, self._HI_CHUNKS):
+            base = self.mem.ptr(self.entity_system + 8 * chunk + self._entity_chunk_off)
+            if not base or not _valid_ptr(base):
+                if self._hi_ptrs.pop(chunk, None) is not None:
+                    for idx in [i for i in self._hi_targets if (i >> 9) == chunk]:
+                        del self._hi_targets[idx]
+                continue
+            raw = self.mem._read(base, st * 512)
+            if not raw or len(raw) != st * 512:
+                continue
+            ptrs = [struct.unpack_from("<Q", raw, s * st)[0] for s in range(512)]
+            prev = self._hi_ptrs.get(chunk)
+            if prev == ptrs:
+                continue
+            for slot in range(512):
+                p = ptrs[slot]
+                if prev is not None and prev[slot] == p:
+                    continue
+                idx = (chunk << 9) | slot
+                if p and _valid_ptr(p):
+                    cls = self._class_name(p)
+                    if cls == "C_C4" or cls == "C_PlantedC4" or cls in _GRENADE_CLASSES:
+                        self._hi_targets[idx] = (p, cls)
+                        continue
+                self._hi_targets.pop(idx, None)
+            self._hi_ptrs[chunk] = ptrs
+
+        now = time.monotonic()
+        if now - self._last_hi_log > 30.0:
+            self._last_hi_log = now
+            log.info("hi-slot scan: %d bomb/grenade entities above idx 1023: %s",
+                     len(self._hi_targets),
+                     ", ".join(f"{c}@{i}" for i, (_, c) in sorted(self._hi_targets.items())) or "none")
+
     def _detect_classinfo_offsets(self) -> bool:
         """Auto-detect class-name chain offsets by finding 'CWorld' on the world entity.
 
@@ -2601,6 +2654,91 @@ class CS2Reader:
         seen_ctrls: set[int] = set()   # dedupe: a player is reachable via both its controller and pawn
         local_pawn = 0                 # local player's pawn (for Linux view-matrix resolution)
 
+        def _special(ent: int, cls: str) -> bool:
+            """Handle carried C4 / planted C4 / grenade entities. Shared between
+            the 0..1023 walk and the high-slot targets from _hi_sweep()."""
+            nonlocal bomb_data, bomb_own_idx
+
+            # ── carried c4 ───────────────────────────────────────────────────
+            if cls == "C_C4":
+                owner = 0
+                if off_owner:
+                    h_own = self.mem.u32(ent + off_owner)
+                    if h_own != INVALID_EHANDLE:
+                        self._bomb_own_idx = h_own & 0xFFFF
+                        bomb_own_idx       = self._bomb_own_idx
+                        owner = self._entity_by_handle(h_own, chunk_cache)
+                x, y, _ = self._origin(ent)
+                if not (x or y) and owner:
+                    # a carried C4 that was never rendered reads (0,0,0) —
+                    # use the carrier's position instead
+                    x, y, _ = self._origin(owner)
+                if x or y:
+                    bomb_data = {"x": x, "y": y}
+                return True
+
+            # ── planted c4 ───────────────────────────────────────────────────
+            if cls == "C_PlantedC4":
+                if off_ticking and self.mem.bool8(ent + off_ticking):
+                    blow_time = (self.mem.f32(ent + off_blow) - curtime) if off_blow else 0.0
+                    if blow_time > 0:
+                        x, y, _ = self._origin(ent)
+                        bomb_data = {
+                            "x":             x,
+                            "y":             y,
+                            "m_blow_time":   blow_time,
+                            "m_is_defused":  self.mem.bool8(ent + off_defused)  if off_defused  else False,
+                            "m_is_defusing": self.mem.bool8(ent + off_defusing) if off_defusing else False,
+                            "m_defuse_time": (self.mem.f32(ent + off_defuse_t) - curtime) if off_defuse_t else 0.0,
+                        }
+                return True
+
+            # ── grenades ─────────────────────────────────────────────────────
+            if cls in _GRENADE_CLASSES:
+                deployed = False
+
+                if cls == "C_SmokeGrenadeProjectile":
+                    off_stb = self._off("C_SmokeGrenadeProjectile", "m_nSmokeEffectTickBegin")
+                    if off_stb:
+                        deployed = self.mem.u32(ent + off_stb) > 0
+                    else:
+                        deployed = self.mem.bool8(ent + _SMOKE_DID_EFFECT_OFF)
+                    # Always show: small dot while in-flight, full circle when deployed
+
+                elif cls == "C_Inferno":
+                    off_post = self._off("C_Inferno", "m_bInPostEffectTime")
+                    if off_post and self.mem.bool8(ent + off_post):
+                        return True  # fire ended naturally or smoked out
+                    deployed = True
+
+                elif cls == "C_MolotovProjectile":
+                    deployed = False  # show as in-flight dot only
+
+                x, y, z = self._origin(ent)
+                if x or y:
+                    entry = {"x": x, "y": y, "z": z,
+                             "type":     _GRENADE_CLASS_TO_TYPE[cls],
+                             "deployed": deployed}
+
+                    # For C_Inferno, attach individual fire positions for accurate shape
+                    if cls == "C_Inferno":
+                        off_fpos = self._off("C_Inferno", "m_firePositions")
+                        off_fcnt = self._off("C_Inferno", "m_nFireCount")
+                        if off_fpos and off_fcnt:
+                            fire_count = min(self.mem.u32(ent + off_fcnt), 64)
+                            if fire_count > 0:
+                                raw = self.mem._read(ent + off_fpos, fire_count * 12)
+                                fire_pts = []
+                                for fi in range(fire_count):
+                                    fx, fy = struct.unpack_from("<ff", raw, fi * 12)
+                                    fire_pts.append({"x": fx, "y": fy})
+                                entry["firePts"] = fire_pts
+
+                    grenades.append(entry)
+                return True
+
+            return False
+
         for idx in range(1024):
             ent = self._entity_ptr(idx, chunk_cache)
             if not ent:
@@ -2701,73 +2839,9 @@ class CS2Reader:
                     "m_has_bomb":   has_bomb,
                 })
 
-            # ── carried c4 ───────────────────────────────────────────────────
-            elif cls == "C_C4":
-                if off_owner:
-                    h_own = self.mem.u32(ent + off_owner)
-                    self._bomb_own_idx = h_own & 0xFFFF
-                    bomb_own_idx       = self._bomb_own_idx
-                x, y, _ = self._origin(ent)
-                if x or y:
-                    bomb_data = {"x": x, "y": y}
-
-            # ── planted c4 ───────────────────────────────────────────────────
-            elif cls == "C_PlantedC4":
-                if off_ticking and self.mem.bool8(ent + off_ticking):
-                    blow_time = (self.mem.f32(ent + off_blow) - curtime) if off_blow else 0.0
-                    if blow_time > 0:
-                        x, y, _ = self._origin(ent)
-                        bomb_data = {
-                            "x":             x,
-                            "y":             y,
-                            "m_blow_time":   blow_time,
-                            "m_is_defused":  self.mem.bool8(ent + off_defused)  if off_defused  else False,
-                            "m_is_defusing": self.mem.bool8(ent + off_defusing) if off_defusing else False,
-                            "m_defuse_time": (self.mem.f32(ent + off_defuse_t) - curtime) if off_defuse_t else 0.0,
-                        }
-
-            # ── grenades ─────────────────────────────────────────────────────
-            elif cls in _GRENADE_CLASSES:
-                deployed = False
-
-                if cls == "C_SmokeGrenadeProjectile":
-                    off_stb = self._off("C_SmokeGrenadeProjectile", "m_nSmokeEffectTickBegin")
-                    if off_stb:
-                        deployed = self.mem.u32(ent + off_stb) > 0
-                    else:
-                        deployed = self.mem.bool8(ent + _SMOKE_DID_EFFECT_OFF)
-                    # Always show: small dot while in-flight, full circle when deployed
-
-                elif cls == "C_Inferno":
-                    off_post = self._off("C_Inferno", "m_bInPostEffectTime")
-                    if off_post and self.mem.bool8(ent + off_post):
-                        continue  # fire ended naturally or smoked out
-                    deployed = True
-
-                elif cls == "C_MolotovProjectile":
-                    deployed = False  # show as in-flight dot only
-
-                x, y, z = self._origin(ent)
-                if x or y:
-                    entry = {"x": x, "y": y, "z": z,
-                             "type":     _GRENADE_CLASS_TO_TYPE[cls],
-                             "deployed": deployed}
-
-                    # For C_Inferno, attach individual fire positions for accurate shape
-                    if cls == "C_Inferno":
-                        off_fpos = self._off("C_Inferno", "m_firePositions")
-                        off_fcnt = self._off("C_Inferno", "m_nFireCount")
-                        if off_fpos and off_fcnt:
-                            fire_count = min(self.mem.u32(ent + off_fcnt), 64)
-                            if fire_count > 0:
-                                raw = self.mem._read(ent + off_fpos, fire_count * 12)
-                                fire_pts = []
-                                for fi in range(fire_count):
-                                    fx, fy = struct.unpack_from("<ff", raw, fi * 12)
-                                    fire_pts.append({"x": fx, "y": fy})
-                                entry["firePts"] = fire_pts
-
-                    grenades.append(entry)
+            # ── carried c4 / planted c4 / grenades ───────────────────────────
+            elif _special(ent, cls):
+                pass
 
             # ── dropped weapons ───────────────────────────────────────────────
             elif off_subid and off_wtype and off_wname and off_owner:
@@ -2782,6 +2856,23 @@ class CS2Reader:
                                 x, y, _ = self._origin(ent)
                                 if x or y:
                                     dropped.append({"x": x, "y": y, "name": wname[7:]})
+
+        # ── entities above idx 1023 (C4 / planted C4 / projectiles) ──────────
+        # Discovery sweep every 3rd frame; known targets are read every frame.
+        self._hi_tick = (self._hi_tick + 1) % 3
+        if self._hi_tick == 0 and self._classnames_available:
+            try:
+                self._hi_sweep()
+            except Exception as e:
+                log.debug("hi-slot sweep failed: %s", e)
+        for hi_idx, (hi_ptr, hi_cls) in list(self._hi_targets.items()):
+            ent = self._entity_ptr(hi_idx, chunk_cache)
+            if ent != hi_ptr:
+                continue   # slot recycled since last sweep — wait for rediscovery
+            try:
+                _special(ent, hi_cls)
+            except Exception as e:
+                log.debug("hi-slot handler failed for %s@%d: %s", hi_cls, hi_idx, e)
 
         # Direct-slot player fallback — used when class names are unavailable (Linux CS2
         # build post-14168 where classinfo chain offsets haven't been resolved yet).
@@ -2924,6 +3015,39 @@ class CS2Reader:
             except Exception as e:
                 log.debug("direct-slot player collection (win) failed: %s", e)
 
+        # Windows bomb fallback — use dwPlantedC4 global when class names unavailable.
+        # dwPlantedC4 → CUtlVector<CHandle<C_PlantedC4>> inside client.dll.
+        if not IS_LINUX and not self._classnames_available and not bomb_data:
+            dw_c4 = self._g.get("dwPlantedC4", 0)
+            if dw_c4 and self.client_base:
+                try:
+                    count = self.mem.u32(self.client_base + dw_c4 + 8)
+                    if count and count < 8:
+                        data_ptr = self.mem.u64(self.client_base + dw_c4)
+                        if _valid_ptr(data_ptr):
+                            for i in range(count):
+                                handle = self.mem.u32(data_ptr + i * 4)
+                                if handle == INVALID_EHANDLE:
+                                    continue
+                                c4 = self._entity_by_handle(handle, chunk_cache)
+                                if not c4:
+                                    continue
+                                if off_ticking and self.mem.bool8(c4 + off_ticking):
+                                    blow_time = (self.mem.f32(c4 + off_blow) - curtime) if off_blow else 0.0
+                                    if blow_time > 0:
+                                        x, y, _ = self._origin(c4)
+                                        bomb_data = {
+                                            "x":             x,
+                                            "y":             y,
+                                            "m_blow_time":   blow_time,
+                                            "m_is_defused":  self.mem.bool8(c4 + off_defused)  if off_defused  else False,
+                                            "m_is_defusing": self.mem.bool8(c4 + off_defusing) if off_defusing else False,
+                                            "m_defuse_time": (self.mem.f32(c4 + off_defuse_t) - curtime) if off_defuse_t else 0.0,
+                                        }
+                                        break
+                except Exception as e:
+                    log.debug("win dwPlantedC4 fallback failed: %s", e)
+
         if IS_LINUX:
             # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.
             # Resolve the matrix from libclient's .bss by validating against the
@@ -2958,7 +3082,7 @@ class CS2Reader:
         return {
             "m_local_team":   local_team,
             "m_players":      players,
-            "m_bomb":         bomb_data,
+            "m_bomb":         bomb_data if bomb_data else None,
             "m_grenades":     grenades,
             "m_dropped":      dropped,
             "m_map":          map_name,

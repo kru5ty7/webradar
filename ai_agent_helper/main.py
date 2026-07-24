@@ -1129,6 +1129,22 @@ _GRENADE_CLASS_TO_TYPE = {
 }
 _GRENADE_CLASSES = set(_GRENADE_CLASS_TO_TYPE)
 
+# Designer names (Hammer/entity-factory names) → C++ class names used in comparisons.
+# Used as fallback when the classinfo chain is unavailable (e.g. Windows CS2 post-update).
+_DESIGNER_TO_CLASS: dict[str, str] = {
+    "cs_player_controller":    "CCSPlayerController",
+    "weapon_c4":               "C_C4",
+    "planted_c4":              "C_PlantedC4",
+    "smokegrenade_projectile": "C_SmokeGrenadeProjectile",
+    "hegrenade_projectile":    "C_HEGrenadeProjectile",
+    "flashbang_projectile":    "C_FlashbangProjectile",
+    "molotov_projectile":      "C_MolotovProjectile",
+    "incgrenade_projectile":   "C_MolotovProjectile",
+    "decoy_projectile":        "C_DecoyProjectile",
+    "inferno":                 "C_Inferno",
+    "world":                   "CWorld",
+}
+
 # hardcoded offsets that never come from schema
 _CURTIME_OFF          = 0x30    # CGlobalVarsBase::m_curtime
 _MAP_NAME_OFF         = 0x188   # CGlobalVarsBase::map name string
@@ -1223,8 +1239,10 @@ class CS2Reader:
         self._classinfo_id_off    = _IDENTITY_CLASS_OFF    # CEntityIdentity → CSchemaClassInfo*
         self._classinfo_name1_off = _CLASSINFO_NAME1_OFF   # CSchemaClassInfo → intermediate ptr
         self._classinfo_name2_off = _CLASSINFO_NAME2_OFF   # intermediate → name std::string*
-        self._classnames_available  = False  # set True when classinfo offsets are confirmed working
+        self._classnames_available   = False  # set True when classinfo offsets are confirmed working
         self._classinfo_charptr_mode = False  # True when name is char* at unk1+off2 (not ptr-to-string)
+        self._use_designer_name      = False  # True when classinfo chain failed; use m_designerName instead
+        self._last_classinfo_retry   = 0.0   # monotonic time of last _detect_classinfo_offsets() retry
 
     def _nv_off(self, name: str, fallback: int = 0) -> int:
         """Live-scanned schema offset by field name, else a fallback."""
@@ -2002,6 +2020,11 @@ class CS2Reader:
         m_idx = self.mem.u32(identity + _IDENTITY_IDX_OFF)
         if (m_idx & ENT_ENTRY_MASK) == ENT_ENTRY_MASK:
             return ""
+        # Designer-name mode: classinfo chain unavailable; read m_designerName directly
+        if self._use_designer_name:
+            off_designer = self._off("CEntityIdentity", "m_designerName", 32)
+            designer = (self.mem.cstring(identity + off_designer) or "") if off_designer else ""
+            return _DESIGNER_TO_CLASS.get(designer, designer) if designer else ""
         class_info = self.mem.ptr(identity + self._classinfo_id_off)
         if not class_info:
             return ""
@@ -2164,6 +2187,22 @@ class CS2Reader:
                                  id_off, off1, off2, s2)
                         return True
                     # Keep going — don't stop on a plausible-but-wrong hit
+
+        # Classinfo chain scan failed. Try m_designerName (CEntityIdentity+0x20) as a direct
+        # const char* class name source — no chain traversal required.  Map designer names
+        # (e.g. "weapon_c4") to the C++ class names our comparisons expect (e.g. "C_C4").
+        off_designer = self._off("CEntityIdentity", "m_designerName", 32)
+        if identity and off_designer:
+            try:
+                designer = self.mem.cstring(identity + off_designer) or ""
+                if designer in _DESIGNER_TO_CLASS:
+                    self._use_designer_name    = True
+                    self._classnames_available = True
+                    log.info("classinfo: chain scan failed — using m_designerName fallback "
+                             "(world entity designer=%r)", designer)
+                    return True
+            except Exception:
+                pass
 
         log.warning("classinfo offset scan: could not find 'CWorld' — class names unavailable; "
                     "old offsets id=0x%02X name1=0x%X name2=0x%02X",
@@ -2581,6 +2620,14 @@ class CS2Reader:
                                 pass
         if not self.entity_system:
             return None
+
+        # Retry classinfo detection every 30 s when it failed at startup (game may not
+        # have been fully loaded then, or designer-name mode not yet confirmed).
+        if not self._classnames_available:
+            now = time.monotonic()
+            if now - self._last_classinfo_retry >= 30.0:
+                self._last_classinfo_retry = now
+                self._detect_classinfo_offsets()
 
         # Refresh global vars pointer for the same reason
         dw_gvars = self._g.get("dwGlobalVars", 0)

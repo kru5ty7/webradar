@@ -1143,7 +1143,13 @@ _DESIGNER_TO_CLASS: dict[str, str] = {
     "decoy_projectile":        "C_DecoyProjectile",
     "inferno":                 "C_Inferno",
     "world":                   "CWorld",
+    "worldent":                "CWorld",   # alternate world-entity designer name
+    "cs_worldentity":          "CWorld",
 }
+
+def _looks_like_designer(s: str) -> bool:
+    """Return True if s looks like a valid CS2 designer/entity name."""
+    return bool(s) and 3 <= len(s) <= 64 and s[0].islower() and s.replace("_", "").isalnum()
 
 # hardcoded offsets that never come from schema
 _CURTIME_OFF          = 0x30    # CGlobalVarsBase::m_curtime
@@ -2020,10 +2026,12 @@ class CS2Reader:
         m_idx = self.mem.u32(identity + _IDENTITY_IDX_OFF)
         if (m_idx & ENT_ENTRY_MASK) == ENT_ENTRY_MASK:
             return ""
-        # Designer-name mode: classinfo chain unavailable; read m_designerName directly
+        # Designer-name mode: classinfo chain unavailable; read m_designerName directly.
+        # m_designerName is a const char* — must dereference the pointer before cstring().
         if self._use_designer_name:
             off_designer = self._off("CEntityIdentity", "m_designerName", 32)
-            designer = (self.mem.cstring(identity + off_designer) or "") if off_designer else ""
+            name_ptr = self.mem.ptr(identity + off_designer) if off_designer else 0
+            designer = self.mem.cstring(name_ptr) if name_ptr else ""
             return _DESIGNER_TO_CLASS.get(designer, designer) if designer else ""
         class_info = self.mem.ptr(identity + self._classinfo_id_off)
         if not class_info:
@@ -2188,14 +2196,15 @@ class CS2Reader:
                         return True
                     # Keep going — don't stop on a plausible-but-wrong hit
 
-        # Classinfo chain scan failed. Try m_designerName (CEntityIdentity+0x20) as a direct
-        # const char* class name source — no chain traversal required.  Map designer names
-        # (e.g. "weapon_c4") to the C++ class names our comparisons expect (e.g. "C_C4").
+        # Classinfo chain scan failed. Try m_designerName (CEntityIdentity+0x20) as a fallback.
+        # m_designerName is a const char* — identity+off holds a POINTER to the string, so we
+        # must dereference it before calling cstring().
         off_designer = self._off("CEntityIdentity", "m_designerName", 32)
         if identity and off_designer:
             try:
-                designer = self.mem.cstring(identity + off_designer) or ""
-                if designer in _DESIGNER_TO_CLASS:
+                name_ptr = self.mem.ptr(identity + off_designer)
+                designer = self.mem.cstring(name_ptr) if name_ptr else ""
+                if _looks_like_designer(designer):
                     self._use_designer_name    = True
                     self._classnames_available = True
                     log.info("classinfo: chain scan failed — using m_designerName fallback "

@@ -852,12 +852,18 @@ def load_offsets() -> dict:
         try:
             cached   = json.loads(CACHE_FILE.read_text())
             cache_ts = cached.get("_ts", 0)
-            # Cache is valid as long as client.dll hasn't changed since it was written.
-            # No time-based expiry — offsets only go stale when the game updates.
-            if cache_ts > dll_mtime:
-                log.info("using cached offsets (client.dll unchanged)")
+            # When client.dll is found: cache is valid as long as the dll hasn't changed.
+            # When client.dll can't be found (non-standard install path on Windows):
+            # fall back to a time-based TTL so stale offsets don't live forever.
+            cache_age = time.time() - cache_ts
+            dll_found = dll_mtime > 0
+            cache_ok  = (cache_ts > dll_mtime) if dll_found else (cache_age < CACHE_MAX_AGE)
+            if cache_ok:
+                reason = "client.dll unchanged" if dll_found else f"age {cache_age/3600:.1f}h < {CACHE_MAX_AGE/3600:.0f}h TTL"
+                log.info("using cached offsets (%s)", reason)
                 return cached
-            log.info("client.dll updated since last cache — rescanning...")
+            reason = "client.dll updated" if dll_found else f"cache expired ({cache_age/3600:.1f}h old)"
+            log.info("%s — rescanning...", reason)
         except Exception:
             pass
 
@@ -3088,13 +3094,21 @@ class CS2Reader:
         # These use cs2-dumper global RVAs that work on both Windows and Linux,
         # bypassing the entity class-name walk entirely.
         if not bomb_data:
-            # ── dwPlantedC4: CUtlVector<CHandle<C_PlantedC4>> ─────────────────
+            # ── dwPlantedC4 global fallback ───────────────────────────────────
+            # Bypasses entity-list class-name walk entirely.
+            # Try interpretation A: CUtlVector<CHandle<C_PlantedC4>>
+            # Try interpretation B: C_PlantedC4* direct pointer
             dw_c4 = self._g.get("dwPlantedC4", 0)
             if dw_c4 and self.client_base:
                 try:
-                    count = self.mem.u32(self.client_base + dw_c4 + 8)
+                    base_addr = self.client_base + dw_c4
+
+                    # ── Interpretation A: CUtlVector ─────────────────────────
+                    # Layout: [ptr(8)] [nAlloc(4)] [nGrow(4)] [m_Size(4)]
+                    # m_Size is at offset +16, NOT +8 (that's nAllocationCount)
+                    count = self.mem.u32(base_addr + 16)   # m_Size
                     if count and count < 8:
-                        data_ptr = self.mem.u64(self.client_base + dw_c4)
+                        data_ptr = self.mem.u64(base_addr)
                         if _valid_ptr(data_ptr):
                             for i in range(count):
                                 handle = self.mem.u32(data_ptr + i * 4)
@@ -3102,10 +3116,19 @@ class CS2Reader:
                                     continue
                                 c4 = self._entity_by_handle(handle, chunk_cache)
                                 if not c4:
+                                    # chunk may be null — try loading it fresh
+                                    slot = handle & ENT_ENTRY_MASK
+                                    ch   = slot >> 9
+                                    ep   = self.mem.ptr(self.entity_system + 8 * ch + self._entity_chunk_off)
+                                    if ep and _valid_ptr(ep):
+                                        chunk_cache[ch] = ep
+                                        c4 = self._entity_by_handle(handle, chunk_cache)
+                                if not c4:
                                     continue
-                                if off_ticking and self.mem.bool8(c4 + off_ticking):
+                                ticking = (not off_ticking) or self.mem.bool8(c4 + off_ticking)
+                                if ticking:
                                     blow_time = (self.mem.f32(c4 + off_blow) - curtime) if off_blow else 0.0
-                                    if blow_time > 0:
+                                    if blow_time > 0 or not off_blow:
                                         x, y, _ = self._origin(c4)
                                         bomb_data = {
                                             "x":             x,
@@ -3116,34 +3139,76 @@ class CS2Reader:
                                             "m_defuse_time": (self.mem.f32(c4 + off_defuse_t) - curtime) if off_defuse_t else 0.0,
                                         }
                                         break
+
+                    # ── Interpretation B: direct C_PlantedC4* pointer ────────
+                    if not bomb_data:
+                        c4_direct = self.mem.ptr(base_addr)
+                        if _valid_ptr(c4_direct):
+                            ticking = (not off_ticking) or self.mem.bool8(c4_direct + off_ticking)
+                            if ticking:
+                                blow_time = (self.mem.f32(c4_direct + off_blow) - curtime) if off_blow else 0.0
+                                if blow_time > 0 or not off_blow:
+                                    x, y, _ = self._origin(c4_direct)
+                                    if x or y:
+                                        bomb_data = {
+                                            "x":             x,
+                                            "y":             y,
+                                            "m_blow_time":   blow_time,
+                                            "m_is_defused":  self.mem.bool8(c4_direct + off_defused)  if off_defused  else False,
+                                            "m_is_defusing": self.mem.bool8(c4_direct + off_defusing) if off_defusing else False,
+                                            "m_defuse_time": (self.mem.f32(c4_direct + off_defuse_t) - curtime) if off_defuse_t else 0.0,
+                                        }
+
                 except Exception as e:
-                    log.debug("dwPlantedC4 global fallback failed: %s", e)
+                    log.warning("dwPlantedC4 global fallback failed: %s", e)
 
         if not bomb_data:
-            # ── dwWeaponC4: CHandle<C_C4> — the carried bomb ──────────────────
+            # ── dwWeaponC4 global fallback — carried bomb ─────────────────────
             dw_c4w = self._g.get("dwWeaponC4", 0)
             if dw_c4w and self.client_base:
                 try:
-                    handle = self.mem.u32(self.client_base + dw_c4w)
+                    base_addr = self.client_base + dw_c4w
+
+                    def _try_c4_entity(c4: int) -> bool:
+                        nonlocal bomb_data
+                        if not c4:
+                            return False
+                        x, y, _ = self._origin(c4)
+                        if not (x or y):
+                            off_own = self._off("C_BaseEntity", "m_hOwnerEntity")
+                            if off_own:
+                                h_own = self.mem.u32(c4 + off_own)
+                                if h_own != INVALID_EHANDLE:
+                                    owner = self._entity_by_handle(h_own, chunk_cache)
+                                    if owner:
+                                        x, y, _ = self._origin(owner)
+                        if x or y:
+                            bomb_data = {"x": x, "y": y}
+                            return True
+                        return False
+
+                    # Try as CHandle<C_C4> (4-byte handle)
+                    handle = self.mem.u32(base_addr)
                     if handle != INVALID_EHANDLE:
                         c4 = self._entity_by_handle(handle, chunk_cache)
-                        if c4:
-                            x, y, _ = self._origin(c4)
-                            if not (x or y):
-                                # Carried weapons often have zero world origin; use the owner
-                                # pawn's position instead (m_hOwnerEntity → pawn).
-                                off_own = self._off("C_BaseEntity", "m_hOwnerEntity")
-                                if off_own:
-                                    h_own = self.mem.u32(c4 + off_own)
-                                    if h_own != INVALID_EHANDLE:
-                                        owner = self._entity_by_handle(h_own, chunk_cache)
-                                        if owner:
-                                            x, y, _ = self._origin(owner)
-                            if x or y:
-                                bomb_data = {"x": x, "y": y}
-                                self._bomb_own_idx = handle & 0xFFFF
+                        if not c4:
+                            slot = handle & ENT_ENTRY_MASK
+                            ch   = slot >> 9
+                            ep   = self.mem.ptr(self.entity_system + 8 * ch + self._entity_chunk_off)
+                            if ep and _valid_ptr(ep):
+                                chunk_cache[ch] = ep
+                                c4 = self._entity_by_handle(handle, chunk_cache)
+                        if _try_c4_entity(c4):
+                            self._bomb_own_idx = handle & 0xFFFF
+
+                    # Try as C_C4* direct pointer (8-byte)
+                    if not bomb_data:
+                        c4_direct = self.mem.ptr(base_addr)
+                        if _valid_ptr(c4_direct) and _try_c4_entity(c4_direct):
+                            pass   # bomb_data set by _try_c4_entity
+
                 except Exception as e:
-                    log.debug("dwWeaponC4 global fallback failed: %s", e)
+                    log.warning("dwWeaponC4 global fallback failed: %s", e)
 
         if IS_LINUX:
             # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.

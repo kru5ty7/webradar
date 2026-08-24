@@ -2069,6 +2069,8 @@ class CS2Reader:
     # ── high-slot entity discovery ────────────────────────────────────────────
     _HI_CHUNKS = 16   # sweep entity slots 1024..8191 (chunks 2..15)
 
+    _hi_sweep_diag_done = False   # one-time diagnostic flag
+
     def _hi_sweep(self):
         """Discover bomb / planted-C4 / grenade entities at slots >= 1024.
 
@@ -2080,6 +2082,17 @@ class CS2Reader:
         """
         if not self.entity_system:
             return
+        # One-time diagnostic: dump the raw chunk pointer array so we can see
+        # which chunks have live data and confirm the entry stride.
+        if not self._hi_sweep_diag_done:
+            self._hi_sweep_diag_done = True
+            rows = []
+            for c in range(0, 20):
+                addr = self.entity_system + 8 * c + self._entity_chunk_off
+                raw8 = self.mem.u64(addr)
+                rows.append(f"  [{c:2d}] @0x{addr:X} = 0x{raw8:X} {'✓' if _valid_ptr(raw8) else '✗'}")
+            log.info("hi-sweep chunk-ptr diagnostic (es=0x%X chunk_off=%d):\n%s",
+                     self.entity_system, self._entity_chunk_off, "\n".join(rows))
         st = self._entity_stride
         for chunk in range(2, self._HI_CHUNKS):
             base = self.mem.ptr(self.entity_system + 8 * chunk + self._entity_chunk_off)
@@ -3071,9 +3084,11 @@ class CS2Reader:
             except Exception as e:
                 log.debug("direct-slot player collection (win) failed: %s", e)
 
-        # Windows bomb fallback — use dwPlantedC4 global when class names unavailable.
-        # dwPlantedC4 → CUtlVector<CHandle<C_PlantedC4>> inside client.dll.
-        if not IS_LINUX and not self._classnames_available and not bomb_data:
+        # Global-pointer bomb fallbacks — always run when entity walk found nothing.
+        # These use cs2-dumper global RVAs that work on both Windows and Linux,
+        # bypassing the entity class-name walk entirely.
+        if not bomb_data:
+            # ── dwPlantedC4: CUtlVector<CHandle<C_PlantedC4>> ─────────────────
             dw_c4 = self._g.get("dwPlantedC4", 0)
             if dw_c4 and self.client_base:
                 try:
@@ -3102,7 +3117,33 @@ class CS2Reader:
                                         }
                                         break
                 except Exception as e:
-                    log.debug("win dwPlantedC4 fallback failed: %s", e)
+                    log.debug("dwPlantedC4 global fallback failed: %s", e)
+
+        if not bomb_data:
+            # ── dwWeaponC4: CHandle<C_C4> — the carried bomb ──────────────────
+            dw_c4w = self._g.get("dwWeaponC4", 0)
+            if dw_c4w and self.client_base:
+                try:
+                    handle = self.mem.u32(self.client_base + dw_c4w)
+                    if handle != INVALID_EHANDLE:
+                        c4 = self._entity_by_handle(handle, chunk_cache)
+                        if c4:
+                            x, y, _ = self._origin(c4)
+                            if not (x or y):
+                                # Carried weapons often have zero world origin; use the owner
+                                # pawn's position instead (m_hOwnerEntity → pawn).
+                                off_own = self._off("C_BaseEntity", "m_hOwnerEntity")
+                                if off_own:
+                                    h_own = self.mem.u32(c4 + off_own)
+                                    if h_own != INVALID_EHANDLE:
+                                        owner = self._entity_by_handle(h_own, chunk_cache)
+                                        if owner:
+                                            x, y, _ = self._origin(owner)
+                            if x or y:
+                                bomb_data = {"x": x, "y": y}
+                                self._bomb_own_idx = handle & 0xFFFF
+                except Exception as e:
+                    log.debug("dwWeaponC4 global fallback failed: %s", e)
 
         if IS_LINUX:
             # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.

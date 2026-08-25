@@ -1292,18 +1292,25 @@ class CS2Reader:
             return 0
 
         def _scan(name: bytes) -> int:
+            # When multiple schema classes inherit the same field, each class's schema
+            # descriptor holds the field offset from *that class's* perspective.
+            # The most-derived (leaf) class has the smallest composite offset; parent
+            # class entries accumulate base-class padding and give larger values.
+            # Collect ALL valid offsets and return the minimum to avoid latching onto
+            # a stale parent-class entry (e.g. 1184) over the correct leaf value (816).
             si = dump.find(name + b"\x00")
             if si < 0:
                 return 0
             needle = struct.pack("<Q", base + si)
+            candidates: list[int] = []
             pos = dump.find(needle)
             while pos >= 0:
                 if pos + 0x14 <= len(dump):
                     off = struct.unpack_from("<I", dump, pos + 0x10)[0]
                     if 0 < off < 0x8000:
-                        return off
+                        candidates.append(off)
                 pos = dump.find(needle, pos + 8)
-            return 0
+            return min(candidates) if candidates else 0
 
         found = {}
         for fname in _RADAR_NETVARS:

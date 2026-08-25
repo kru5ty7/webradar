@@ -844,6 +844,55 @@ def _parse_fields(raw: dict) -> dict:
     return out
 
 
+# Known-good schema field offsets verified against a2x/cs2-dumper (2026-08-26).
+# The local schema scanner (_linux_refresh_field_offsets) is unreliable — it latches
+# onto parent-class descriptor artifacts (m_pGameSceneNode=1184 instead of 816) and
+# spurious binary matches (offset=4 for six unrelated fields).  These field offsets
+# come from the schema system and are identical on Windows and Linux builds, so we
+# pin them here and let the scanner only patch downward afterward.
+#
+# NOTE: only *field* offsets are pinned.  Global RVAs (dwEntityList etc.) are
+# module-relative and differ between client.dll and libclient.so — those are
+# resolved by the ELF scanner / interface scan on Linux and must not be seeded.
+_LINUX_FIELD_BASELINE: dict[str, dict[str, int]] = {
+    "C_BaseEntity":          {"m_pGameSceneNode": 816, "m_iTeamNum": 999,
+                              "m_iHealth": 844, "m_hOwnerEntity": 1312,
+                              "m_nSubclassID": 896},
+    "CGameSceneNode":        {"m_vecAbsOrigin": 200, "m_vecOrigin": 128},
+    "C_BasePlayerPawn":      {"m_hController": 5072, "m_pWeaponServices": 4616,
+                              "m_pItemServices": 4624},
+    "CBasePlayerController": {"m_hPawn": 1724, "m_steamID": 1920,
+                              "m_bIsLocalPlayerController": 1928},
+    "CCSPlayerController":   {"m_hPlayerPawn": 2324, "m_steamID": 1920,
+                              "m_bIsLocalPlayerController": 1928},
+    "C_CSPlayerPawn":        {"m_angEyeAngles": 13136},
+    "C_C4":                  {"m_bStartedArming": 7400},
+    "C_PlantedC4":           {"m_flC4Blow": 4560, "m_flDefuseCountDown": 4592,
+                              "m_bBombDefused": 4596, "m_nBombSite": 4516},
+}
+
+
+def _apply_linux_baseline(offsets: dict) -> int:
+    """Overwrite stale/corrupt field offsets with verified values (Linux only).
+
+    Must run on BOTH the cached and freshly-fetched paths of load_offsets():
+    a corrupt cache is exactly the case this exists to repair.
+    """
+    if not IS_LINUX:
+        return 0
+    fields = offsets.setdefault("fields", {})
+    patched = 0
+    for cls, base_fields in _LINUX_FIELD_BASELINE.items():
+        cls_fields = fields.setdefault(cls, {})
+        for fname, good_val in base_fields.items():
+            if cls_fields.get(fname) != good_val:
+                cls_fields[fname] = good_val
+                patched += 1
+    if patched:
+        log.info("baseline: applied %d verified field offsets (overrode stale values)", patched)
+    return patched
+
+
 def load_offsets() -> dict:
     dll_path  = _find_client_dll()
     dll_mtime = dll_path.stat().st_mtime if dll_path else 0
@@ -861,6 +910,10 @@ def load_offsets() -> dict:
             if cache_ok:
                 reason = "client.dll unchanged" if dll_found else f"age {cache_age/3600:.1f}h < {CACHE_MAX_AGE/3600:.0f}h TTL"
                 log.info("using cached offsets (%s)", reason)
+                # A cached-but-corrupt offset set is the main failure mode this
+                # baseline repairs, so it must be applied here too — not only on
+                # the fresh-fetch path below.
+                _apply_linux_baseline(cached)
                 return cached
             reason = "client.dll updated" if dll_found else f"cache expired ({cache_age/3600:.1f}h old)"
             log.info("%s — rescanning...", reason)
@@ -893,50 +946,7 @@ def load_offsets() -> dict:
             log.critical("no cached offsets and fetch failed — cannot continue")
             sys.exit(1)
 
-    # On Linux, unconditionally apply known-good field offsets fetched from
-    # a2x/cs2-dumper (verified 2026-08-26).  The local schema scanner is unreliable
-    # (reads parent-class artifacts or spurious binary matches) so we pin all
-    # critical fields here and let the scanner only patch downward afterward.
-    if IS_LINUX:
-        _LINUX_BASELINE: dict[str, dict[str, int]] = {
-            "C_BaseEntity":         {"m_pGameSceneNode": 816, "m_iTeamNum": 999,
-                                      "m_iHealth": 844, "m_hOwnerEntity": 1312,
-                                      "m_nSubclassID": 896},
-            "CGameSceneNode":       {"m_vecAbsOrigin": 200, "m_vecOrigin": 128},
-            "C_BasePlayerPawn":     {"m_hController": 5072, "m_pWeaponServices": 4616,
-                                      "m_pItemServices": 4624},
-            "CBasePlayerController":{"m_hPawn": 1724, "m_steamID": 1920,
-                                      "m_bIsLocalPlayerController": 1928},
-            "CCSPlayerController":  {"m_hPlayerPawn": 2324, "m_steamID": 1920,
-                                      "m_bIsLocalPlayerController": 1928},
-            "C_CSPlayerPawn":       {"m_angEyeAngles": 13136},
-            "C_C4":                 {"m_bStartedArming": 7400},
-            "C_PlantedC4":          {"m_flC4Blow": 4560, "m_flDefuseCountDown": 4592,
-                                      "m_bBombDefused": 4596, "m_nBombSite": 4516},
-        }
-        f = result.setdefault("fields", {})
-        baseline_patched = 0
-        for cls, base_fields in _LINUX_BASELINE.items():
-            cls_f = f.setdefault(cls, {})
-            for fname, good_val in base_fields.items():
-                if cls_f.get(fname) != good_val:
-                    cls_f[fname] = good_val
-                    baseline_patched += 1
-        if baseline_patched:
-            log.info("baseline: applied %d verified a2x field offsets (overrode stale cache)",
-                     baseline_patched)
-        # Also seed the global RVAs (entity list, local player controller, etc.)
-        _LINUX_GLOBALS: dict[str, int] = {
-            "dwEntityList":            39264816,
-            "dwGlobalVars":            34276848,
-            "dwLocalPlayerController": 37363504,
-            "dwViewMatrix":            37537840,
-            "dwPlantedC4":             37296664,
-        }
-        g = result.setdefault("globals", {})
-        for gname, gval in _LINUX_GLOBALS.items():
-            if g.get(gname) != gval:
-                g[gname] = gval
+    _apply_linux_baseline(result)
 
     # Always run local scanner to patch any offsets cs2-dumper may have wrong
     # for the currently installed client.dll build
@@ -1393,18 +1403,19 @@ class CS2Reader:
         patched = 0
         _FLOOR = 64  # scanner offsets below this are spurious (vtable area / bad layout read)
         for cls, fields in self._f.items():
+            pinned = _LINUX_FIELD_BASELINE.get(cls, {})
             for fname, off in found.items():
                 if fname in fields and fields[fname] != off:
+                    if fname in pinned:
+                        # This field is verified in the baseline. The scanner has
+                        # proven unreliable for exactly these fields, so never let
+                        # it override them; it still resolves everything else.
+                        log.debug("offset refresh: keeping pinned %s.%s = %d (scanner said %d)",
+                                  cls, fname, pinned[fname], off)
+                        continue
                     if off < _FLOOR:
                         log.debug("offset refresh: skipping %s.%s = %d (below floor %d)",
                                   cls, fname, off, _FLOOR)
-                        continue
-                    cur = fields[fname]
-                    if cur != 0 and off > cur:
-                        # Scanner produced a larger value than a2x — likely a parent-class
-                        # descriptor artifact (e.g. 1184 vs leaf-class 816). Keep a2x value.
-                        log.debug("offset refresh: skipping %s.%s scanner=%d > a2x=%d (parent artifact)",
-                                  cls, fname, off, cur)
                         continue
                     fields[fname] = off
                     patched += 1
@@ -2333,54 +2344,6 @@ class CS2Reader:
         node = self.mem.ptr(entity_ptr + off_node)
         if not node:
             return 0.0, 0.0, 0.0
-
-        # One-time diagnostic: scan the entity for valid ptr→non-zero coords.
-        if not getattr(self, "_origin_diag_done", False):
-            self._origin_diag_done = True
-            import struct as _s
-            try:
-                # Step 1: what coords does the current node give?
-                node_blob = self.mem._read(node, 300)
-                node_coords = {}
-                for off in [4, 16, 48, 64, 80, 96, 112, 128, 160, 184]:
-                    if off + 12 <= len(node_blob):
-                        x, y, z = _s.unpack_from("<fff", node_blob, off)
-                        if -100000 < x < 100000 and -100000 < y < 100000 and abs(z) < 10000:
-                            node_coords[off] = (round(x, 1), round(y, 1), round(z, 1))
-                cls_name = self._class_name(entity_ptr)
-                # Also scan entity memory for dwords == 2 or 3 (team numbers) to verify m_iTeamNum
-                ent_blob2 = self.mem._read(entity_ptr, 4096)
-                team_hits = []
-                for _to in range(0, len(ent_blob2) - 3, 4):
-                    dw = _s.unpack_from("<I", ent_blob2, _to)[0]
-                    if dw in (2, 3):
-                        team_hits.append(_to)
-                log.warning("ORIGIN-DIAG1 ent=0x%X cls=%r off_node=%d node=0x%X valid=%s coords@node: %s team_dword_offsets(2or3): %s",
-                            entity_ptr, cls_name, off_node, node, _valid_ptr(node), node_coords, team_hits[:20])
-
-                # Step 2: scan entity memory for any pointer whose target has
-                # non-zero plausible coordinates (find the real game scene node).
-                ent_blob = self.mem._read(entity_ptr, 2000)
-                hits = {}
-                for off in range(0, 1992, 8):
-                    ptr_val = _s.unpack_from("<Q", ent_blob, off)[0]
-                    if not _valid_ptr(ptr_val):
-                        continue
-                    try:
-                        nb = self.mem._read(ptr_val, 220)
-                        for coord_off in [4, 48, 64, 80, 96, 112, 128, 160, 184]:
-                            if coord_off + 12 > len(nb):
-                                continue
-                            x, y, z = _s.unpack_from("<fff", nb, coord_off)
-                            if (50 < abs(x) < 30000 or 50 < abs(y) < 30000) and abs(z) < 5000:
-                                hits[off] = (coord_off, round(x,1), round(y,1), round(z,1))
-                                break
-                    except Exception:
-                        pass
-                log.warning("ORIGIN-DIAG2 ent=0x%X; ptr offsets with live coords: %s",
-                            entity_ptr, hits if hits else "NONE")
-            except Exception as e:
-                log.warning("ORIGIN-DIAG failed: %s", e)
 
         base = node + off_origin
         return self.mem.f32(base), self.mem.f32(base + 4), self.mem.f32(base + 8)

@@ -2274,22 +2274,43 @@ class CS2Reader:
         if not node:
             return 0.0, 0.0, 0.0
 
-        # One-time diagnostic: log node ptr + candidate position offsets so we
-        # can find the correct m_vecAbsOrigin for this CS2 build.
+        # One-time diagnostic: scan the entity for valid ptr→non-zero coords.
         if not getattr(self, "_origin_diag_done", False):
             self._origin_diag_done = True
+            import struct as _s
             try:
-                blob = self.mem._read(node, 300)
-                candidates = {}
-                for off in [4, 16, 48, 64, 80, 96, 112, 128, 160, 164, 184, 200]:
-                    if off + 12 <= len(blob):
-                        import struct as _s
-                        x, y, z = _s.unpack_from("<fff", blob, off)
+                # Step 1: what coords does the current node give?
+                node_blob = self.mem._read(node, 300)
+                node_coords = {}
+                for off in [4, 16, 48, 64, 80, 96, 112, 128, 160, 184]:
+                    if off + 12 <= len(node_blob):
+                        x, y, z = _s.unpack_from("<fff", node_blob, off)
                         if -100000 < x < 100000 and -100000 < y < 100000 and abs(z) < 10000:
-                            candidates[off] = (round(x,1), round(y,1), round(z,1))
-                log.warning("ORIGIN-DIAG ent=0x%X node=0x%X node_valid=%s; "
-                            "candidate offsets (x,y,z): %s",
-                            entity_ptr, node, _valid_ptr(node), candidates)
+                            node_coords[off] = (round(x, 1), round(y, 1), round(z, 1))
+                log.warning("ORIGIN-DIAG1 ent=0x%X off_node=%d node=0x%X valid=%s coords@node: %s",
+                            entity_ptr, off_node, node, _valid_ptr(node), node_coords)
+
+                # Step 2: scan entity memory for any pointer whose target has
+                # non-zero plausible coordinates (find the real game scene node).
+                ent_blob = self.mem._read(entity_ptr, 2000)
+                hits = {}
+                for off in range(0, 1992, 8):
+                    ptr_val = _s.unpack_from("<Q", ent_blob, off)[0]
+                    if not _valid_ptr(ptr_val):
+                        continue
+                    try:
+                        nb = self.mem._read(ptr_val, 220)
+                        for coord_off in [4, 48, 64, 80, 96, 112, 128, 160, 184]:
+                            if coord_off + 12 > len(nb):
+                                continue
+                            x, y, z = _s.unpack_from("<fff", nb, coord_off)
+                            if (500 < abs(x) < 30000 or 500 < abs(y) < 30000) and abs(z) < 5000:
+                                hits[off] = (coord_off, round(x,1), round(y,1), round(z,1))
+                                break
+                    except Exception:
+                        pass
+                log.warning("ORIGIN-DIAG2 ent=0x%X; ptr offsets with live coords: %s",
+                            entity_ptr, hits if hits else "NONE")
             except Exception as e:
                 log.warning("ORIGIN-DIAG failed: %s", e)
 

@@ -893,6 +893,40 @@ def load_offsets() -> dict:
             log.critical("no cached offsets and fetch failed — cannot continue")
             sys.exit(1)
 
+    # Seed known-good field offsets validated from a2x/cs2-dumper.
+    # These override any stale/corrupt cached values (e.g. =4 from a broken run).
+    # Only overwrite if the current value is missing (0) or clearly wrong (< 64 for
+    # fields that cannot live near offset 0).
+    _LINUX_BASELINE: dict[str, dict[str, int]] = {
+        "C_BaseEntity":         {"m_pGameSceneNode": 816, "m_iTeamNum": 999,
+                                  "m_iHealth": 844, "m_hOwnerEntity": 1312,
+                                  "m_nSubclassID": 896},
+        "CGameSceneNode":       {"m_vecAbsOrigin": 200, "m_vecOrigin": 128},
+        "C_BasePlayerPawn":     {"m_hController": 5072, "m_pWeaponServices": 4616,
+                                  "m_pItemServices": 4624},
+        "CBasePlayerController":{"m_hPawn": 1724, "m_steamID": 1920,
+                                  "m_bIsLocalPlayerController": 1928},
+        "CCSPlayerController":  {"m_hPlayerPawn": 2324, "m_steamID": 1920,
+                                  "m_bIsLocalPlayerController": 1928},
+        "C_CSPlayerPawn":       {"m_angEyeAngles": 13136},
+        "C_C4":                 {"m_bStartedArming": 7400},
+        "C_PlantedC4":          {"m_flC4Blow": 4560, "m_flDefuseCountDown": 4592,
+                                  "m_bBombDefused": 4596, "m_nBombSite": 4516},
+    }
+    f = result.setdefault("fields", {})
+    baseline_patched = 0
+    for cls, base_fields in _LINUX_BASELINE.items():
+        cls_f = f.setdefault(cls, {})
+        for fname, good_val in base_fields.items():
+            cur = cls_f.get(fname, 0)
+            if cur < 64 or cur > good_val * 2:
+                # current value is missing, near-zero (spurious), or wildly large → seed it
+                if cur != good_val:
+                    cls_f[fname] = good_val
+                    baseline_patched += 1
+    if baseline_patched:
+        log.info("baseline: seeded %d field offsets from known-good a2x values", baseline_patched)
+
     # Always run local scanner to patch any offsets cs2-dumper may have wrong
     # for the currently installed client.dll build
     log.info("running local binary scan to verify/patch offsets...")
@@ -1353,6 +1387,13 @@ class CS2Reader:
                     if off < _FLOOR:
                         log.debug("offset refresh: skipping %s.%s = %d (below floor %d)",
                                   cls, fname, off, _FLOOR)
+                        continue
+                    cur = fields[fname]
+                    if cur != 0 and off > cur:
+                        # Scanner produced a larger value than a2x — likely a parent-class
+                        # descriptor artifact (e.g. 1184 vs leaf-class 816). Keep a2x value.
+                        log.debug("offset refresh: skipping %s.%s scanner=%d > a2x=%d (parent artifact)",
+                                  cls, fname, off, cur)
                         continue
                     fields[fname] = off
                     patched += 1

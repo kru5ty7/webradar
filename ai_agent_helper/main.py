@@ -844,16 +844,21 @@ def _parse_fields(raw: dict) -> dict:
     return out
 
 
-# Known-good schema field offsets verified against a2x/cs2-dumper (2026-08-26).
-# The local schema scanner (_linux_refresh_field_offsets) is unreliable — it latches
-# onto parent-class descriptor artifacts (m_pGameSceneNode=1184 instead of 816) and
-# spurious binary matches (offset=4 for six unrelated fields).  These field offsets
-# come from the schema system and are identical on Windows and Linux builds, so we
-# pin them here and let the scanner only patch downward afterward.
+# Fallback field offsets from a2x/cs2-dumper (Windows client.dll, 2026-08-26).
 #
-# NOTE: only *field* offsets are pinned.  Global RVAs (dwEntityList etc.) are
-# module-relative and differ between client.dll and libclient.so — those are
-# resolved by the ELF scanner / interface scan on Linux and must not be seeded.
+# These are a SEED ONLY — the live schema scanner (_linux_refresh_field_offsets)
+# runs afterward and overrides them wherever it resolves a field.  That ordering
+# matters: the Linux class layout is NOT the same as the Windows one.  Measured
+# on this build, every C_BaseEntity field sits exactly +368 bytes further along
+# than the Windows value (m_pGameSceneNode 816→1184, m_iTeamNum 999→1367,
+# m_iHealth 844→1212, m_nSubclassID 896→1264), and pawn-side fields sit -120.
+# A constant delta across independent fields is a real layout difference, not
+# scanner noise, so the live scan is the source of truth on Linux and these
+# values only fill in fields the scan could not resolve.
+#
+# NOTE: fields only.  Global RVAs (dwEntityList etc.) are module-relative and
+# differ between client.dll and libclient.so — those are resolved by the ELF
+# scanner / interface scan on Linux and must never be seeded from here.
 _LINUX_FIELD_BASELINE: dict[str, dict[str, int]] = {
     "C_BaseEntity":          {"m_pGameSceneNode": 816, "m_iTeamNum": 999,
                               "m_iHealth": 844, "m_hOwnerEntity": 1312,
@@ -873,10 +878,12 @@ _LINUX_FIELD_BASELINE: dict[str, dict[str, int]] = {
 
 
 def _apply_linux_baseline(offsets: dict) -> int:
-    """Overwrite stale/corrupt field offsets with verified values (Linux only).
+    """Seed sane field offsets, replacing stale/corrupt cached values (Linux only).
 
-    Must run on BOTH the cached and freshly-fetched paths of load_offsets():
-    a corrupt cache is exactly the case this exists to repair.
+    Runs on BOTH the cached and freshly-fetched paths of load_offsets(): a
+    cached-but-corrupt offset set is exactly what this repairs. The live schema
+    scanner runs later during setup() and overrides these wherever it resolves a
+    field, so this only has the final say for fields the scan misses.
     """
     if not IS_LINUX:
         return 0
@@ -1403,16 +1410,8 @@ class CS2Reader:
         patched = 0
         _FLOOR = 64  # scanner offsets below this are spurious (vtable area / bad layout read)
         for cls, fields in self._f.items():
-            pinned = _LINUX_FIELD_BASELINE.get(cls, {})
             for fname, off in found.items():
                 if fname in fields and fields[fname] != off:
-                    if fname in pinned:
-                        # This field is verified in the baseline. The scanner has
-                        # proven unreliable for exactly these fields, so never let
-                        # it override them; it still resolves everything else.
-                        log.debug("offset refresh: keeping pinned %s.%s = %d (scanner said %d)",
-                                  cls, fname, pinned[fname], off)
-                        continue
                     if off < _FLOOR:
                         log.debug("offset refresh: skipping %s.%s = %d (below floor %d)",
                                   cls, fname, off, _FLOOR)
@@ -2788,7 +2787,8 @@ class CS2Reader:
                 return None
 
         off_team = self._off("C_BaseEntity", "m_iTeamNum")
-        local_team = self.mem.u32(lpc + off_team) if off_team else 0
+        # m_iTeamNum is a uint8 — mask the neighbouring bytes out of the 32-bit read.
+        local_team = (self.mem.u32(lpc + off_team) & 0xFF) if off_team else 0
 
         # Keep broadcasting with the last known team during brief transitions
         # (half-time swap, round restart) so the webapp doesn't freeze.
@@ -2959,9 +2959,11 @@ class CS2Reader:
                 seen_ctrls.add(ctrl)
 
                 # Team can sit on the controller or the pawn depending on build.
-                team = self.mem.u32(ctrl + off_team_) if off_team_ else 0
+                # m_iTeamNum is a uint8 at an unaligned offset, so mask off the
+                # three neighbouring bytes a 32-bit read would drag in.
+                team = (self.mem.u32(ctrl + off_team_) & 0xFF) if off_team_ else 0
                 if team not in (2, 3):
-                    team = self.mem.u32(pawn + off_team_) if off_team_ else team
+                    team = (self.mem.u32(pawn + off_team_) & 0xFF) if off_team_ else team
                 if team not in (2, 3):
                     continue
 
@@ -3001,6 +3003,15 @@ class CS2Reader:
 
                 if ctrl == lpc and not is_dead:
                     local_pawn = pawn   # for Linux view-matrix resolution below
+                    if not getattr(self, "_local_logged", False):
+                        self._local_logged = True
+                        # One-shot sanity line: separates "dropped by the team gate"
+                        # from "present but origin is zero" from "backend fine, webapp
+                        # not rendering" — three failures that look identical otherwise.
+                        log.info("local player resolved: name=%r team=%d health=%d "
+                                 "pos=(%.1f, %.1f, %.1f) weapons=%s",
+                                 pname, team, health, x, y, z,
+                                 weapons.get("m_active") or weapons.get("m_primary") or "none")
 
                 players.append({
                     "m_idx":        idx,
@@ -3068,7 +3079,7 @@ class CS2Reader:
                         ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
                         if not ctrl or ctrl in seen_ctrls:
                             continue
-                        team = self.mem.u32(ctrl + off_team_) if off_team_ else 0
+                        team = (self.mem.u32(ctrl + off_team_) & 0xFF) if off_team_ else 0
                         if team not in (2, 3):
                             continue
                         h_pawn = self.mem.u32(ctrl + off_hpawn)
@@ -3137,7 +3148,7 @@ class CS2Reader:
                         ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
                         if not ctrl or ctrl in seen_ctrls:
                             continue
-                        team = self.mem.u32(ctrl + off_team_) if off_team_ else 0
+                        team = (self.mem.u32(ctrl + off_team_) & 0xFF) if off_team_ else 0
                         if team not in (2, 3):
                             continue
                         h_pawn = self.mem.u32(ctrl + off_hpawn)

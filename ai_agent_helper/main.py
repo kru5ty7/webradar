@@ -1205,15 +1205,22 @@ def _valid_ptr(p: int) -> bool:
 
 
 class CS2Reader:
-    def __init__(self, mem: Memory, offsets: dict, steam_id: int = 0):
+    def __init__(self, mem: Memory, offsets: dict, steam_id=0):
         self.mem      = mem
         self._offsets = offsets          # full dict; needed for correct cache writes
         self._g       = offsets.setdefault("globals", {})
         self._f       = offsets.get("fields", {})
-        # SteamID64 of the local player (config.json / loginusers.vdf). When set,
+        # SteamID64(s) of the local player (config.json / loginusers.vdf). When set,
         # local-player identification matches m_steamID instead of trusting
         # m_bIsLocalPlayerController, which false-positives on native Linux CS2.
-        self.steam_id = int(steam_id or 0)
+        # Accepts a frozenset (multi-account), int, or 0.
+        if isinstance(steam_id, frozenset):
+            self.steam_ids = steam_id
+        elif steam_id:
+            self.steam_ids = frozenset([int(steam_id)])
+        else:
+            self.steam_ids = frozenset()
+        self.steam_id = next(iter(self.steam_ids), 0)  # primary (for logging)
 
         self.client_base        = 0
         self.entity_system      = 0
@@ -1298,17 +1305,29 @@ class CS2Reader:
             # class entries accumulate base-class padding and give larger values.
             # Collect ALL valid offsets and return the minimum to avoid latching onto
             # a stale parent-class entry (e.g. 1184) over the correct leaf value (816).
+            #
+            # SchemaClassFieldData_t layout: +0x00 name ptr, +0x08 type ptr, +0x10 offset.
+            # Filter: type_ptr at +0x08 must be a valid userspace pointer (or 0 for
+            # primitive types). Spurious name-string matches in other binary sections have
+            # a small integer there (e.g. 4), producing a false minimum that beats the
+            # real field offset.
             si = dump.find(name + b"\x00")
             if si < 0:
                 return 0
             needle = struct.pack("<Q", base + si)
             candidates: list[int] = []
             pos = dump.find(needle)
+            module_end = base + len(dump)
             while pos >= 0:
                 if pos + 0x14 <= len(dump):
-                    off = struct.unpack_from("<I", dump, pos + 0x10)[0]
-                    if 0 < off < 0x8000:
-                        candidates.append(off)
+                    type_ptr = struct.unpack_from("<Q", dump, pos + 0x08)[0]
+                    # Accept only entries whose type pointer looks like a real pointer
+                    # or is null (some primitive schema types). Small integers (< 0x10000)
+                    # indicate a non-schema data context — skip them.
+                    if type_ptr == 0 or _valid_ptr(type_ptr):
+                        off = struct.unpack_from("<I", dump, pos + 0x10)[0]
+                        if 0 < off < 0x8000:
+                            candidates.append(off)
                 pos = dump.find(needle, pos + 8)
             return min(candidates) if candidates else 0
 
@@ -2338,10 +2357,10 @@ class CS2Reader:
         """
         off_steam = self._off("CBasePlayerController", "m_steamID")
         if self._lpc_fallback:
-            if not (self.steam_id and off_steam):
+            if not (self.steam_ids and off_steam):
                 return self._lpc_fallback
             try:
-                if self.mem.u64(self._lpc_fallback + off_steam) == self.steam_id:
+                if self.mem.u64(self._lpc_fallback + off_steam) in self.steam_ids:
                     return self._lpc_fallback
             except Exception:
                 pass
@@ -2354,9 +2373,9 @@ class CS2Reader:
 
         off_is_local = self._off("CBasePlayerController", "m_bIsLocalPlayerController")
         off_hctrl    = self._off("C_BasePlayerPawn", "m_hController") or self._nv_off("m_hController")
-        if not self.entity_system or not (off_is_local or (self.steam_id and off_steam)):
-            log.warning("lpc fallback: skipping scan — entity_system=0x%X off_is_local=%d steam_id=%s off_steam=%d",
-                        self.entity_system, off_is_local, self.steam_id, off_steam)
+        if not self.entity_system or not (off_is_local or (self.steam_ids and off_steam)):
+            log.warning("lpc fallback: skipping scan — entity_system=0x%X off_is_local=%d steam_ids=%s off_steam=%d",
+                        self.entity_system, off_is_local, sorted(self.steam_ids), off_steam)
             return 0
 
         cache: dict[int, int] = {}
@@ -2389,9 +2408,9 @@ class CS2Reader:
                 continue
 
             found_any += 1
-            if self.steam_id and off_steam:
+            if self.steam_ids and off_steam:
                 try:
-                    if self.mem.u64(controller + off_steam) == self.steam_id:
+                    if self.mem.u64(controller + off_steam) in self.steam_ids:
                         log.info("lpc fallback: local controller matched by steam_id via idx=%d (%s) ctrl=0x%X",
                                  idx, cls, controller)
                         self._lpc_fallback = controller
@@ -2406,10 +2425,10 @@ class CS2Reader:
                     pass
 
         if flag_hit:
-            if self.steam_id:
-                log.warning("lpc fallback: steam_id %d not found among %d controllers — "
+            if self.steam_ids:
+                log.warning("lpc fallback: steam_ids %s not found among %d controllers — "
                             "using m_bIsLocalPlayerController instead (verify steam_id in config.json)",
-                            self.steam_id, found_any)
+                            sorted(self.steam_ids), found_any)
             else:
                 log.info("lpc fallback: local controller found via flag ctrl=0x%X", flag_hit)
             self._lpc_fallback = flag_hit
@@ -2423,7 +2442,7 @@ class CS2Reader:
 
         # Last resort: avitran-style direct controller slot scan (slots 1-64 = controller slots).
         # Bypasses class-name lookup entirely. Formula mirrors get_client_entity() in cs2-radar.
-        if IS_LINUX and self.entity_system and (self.steam_id and off_steam or off_is_local):
+        if IS_LINUX and self.entity_system and (self.steam_ids and off_steam or off_is_local):
             try:
                 chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
                 if _valid_ptr(chunk0):
@@ -2432,9 +2451,9 @@ class CS2Reader:
                         ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
                         if not ctrl:
                             continue
-                        if self.steam_id and off_steam:
+                        if self.steam_ids and off_steam:
                             try:
-                                if self.mem.u64(ctrl + off_steam) == self.steam_id:
+                                if self.mem.u64(ctrl + off_steam) in self.steam_ids:
                                     log.info("lpc direct-slot: local controller by steam_id slot=%d ctrl=0x%X",
                                              slot, ctrl)
                                     self._lpc_fallback = ctrl
@@ -2454,7 +2473,7 @@ class CS2Reader:
             except Exception as e:
                 log.debug("lpc direct-slot scan failed: %s", e)
 
-        elif not IS_LINUX and self.entity_system and (self.steam_id and off_steam or off_is_local):
+        elif not IS_LINUX and self.entity_system and (self.steam_ids and off_steam or off_is_local):
             try:
                 chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
                 if _valid_ptr(chunk0):
@@ -2463,9 +2482,9 @@ class CS2Reader:
                         ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
                         if not ctrl:
                             continue
-                        if self.steam_id and off_steam:
+                        if self.steam_ids and off_steam:
                             try:
-                                if self.mem.u64(ctrl + off_steam) == self.steam_id:
+                                if self.mem.u64(ctrl + off_steam) in self.steam_ids:
                                     log.info("lpc direct-slot (win): local controller by steam_id slot=%d ctrl=0x%X",
                                              slot, ctrl)
                                     self._lpc_fallback = ctrl
@@ -2672,12 +2691,12 @@ class CS2Reader:
                 self.gvars = gv
 
         lpc = self.mem.ptr(self.lpc_addr)
-        if lpc and self.steam_id:
+        if lpc and self.steam_ids:
             # A wrong (Windows) RVA can still dereference to a plausible pointer
             # on Linux — accept it only if it is really OUR controller.
             off_steam_chk = self._off("CBasePlayerController", "m_steamID")
             try:
-                if off_steam_chk and self.mem.u64(lpc + off_steam_chk) != self.steam_id:
+                if off_steam_chk and self.mem.u64(lpc + off_steam_chk) not in self.steam_ids:
                     lpc = 0
             except Exception:
                 lpc = 0
@@ -3366,12 +3385,31 @@ def _detect_steam_id() -> int:
     return 0
 
 
-def _resolve_steam_id(cfg: dict) -> int:
-    """SteamID64 used to identify the local player on the radar.
-    config.json wins; otherwise auto-detect once and persist for next runs."""
-    raw = str(cfg.get("steam_id", "")).strip()
-    if raw.isdigit() and int(raw) > 0:
-        return int(raw)
+def _resolve_steam_id(cfg: dict) -> frozenset:
+    """SteamID64(s) used to identify the local player on the radar.
+
+    config.json steam_id can be a single ID string/int or a list of IDs,
+    allowing multiple accounts (e.g. ["76561198000000000","76561198000000001"]).
+    Falls back to auto-detection from loginusers.vdf when not configured.
+    Returns a frozenset of ints.
+    """
+    raw = cfg.get("steam_id", "")
+    ids: set[int] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            s = str(item).strip()
+            if s.isdigit() and int(s) > 0:
+                ids.add(int(s))
+    else:
+        s = str(raw).strip()
+        # Support comma-separated list in a single string
+        for part in s.split(","):
+            part = part.strip()
+            if part.isdigit() and int(part) > 0:
+                ids.add(int(part))
+    if ids:
+        log.info("steam_id(s) from config: %s", sorted(ids))
+        return frozenset(ids)
     sid = _detect_steam_id()
     if sid:
         cfg["steam_id"] = str(sid)
@@ -3380,11 +3418,11 @@ def _resolve_steam_id(cfg: dict) -> int:
         except Exception:
             log.debug("could not persist steam_id to config.json", exc_info=True)
         log.info("steam_id auto-detected from loginusers.vdf: %d (saved to config.json)", sid)
-    else:
-        log.warning("steam_id not set and auto-detection failed — falling back to "
-                    "m_bIsLocalPlayerController for local-player detection "
-                    "(set \"steam_id\" in config.json if team colors are wrong)")
-    return sid
+        return frozenset([sid])
+    log.warning("steam_id not set and auto-detection failed — falling back to "
+                "m_bIsLocalPlayerController for local-player detection "
+                "(set \"steam_id\" in config.json if team colors are wrong)")
+    return frozenset()
 
 
 def _check_for_update(config: dict) -> None:

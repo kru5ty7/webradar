@@ -2268,16 +2268,31 @@ class CS2Reader:
     def _origin(self, entity_ptr: int) -> tuple[float, float, float]:
         off_node   = self._off("C_BaseEntity", "m_pGameSceneNode")
         off_origin = self._off("CGameSceneNode", "m_vecAbsOrigin")
-        # After some CS2 updates m_vecAbsOrigin gets a very small offset (≤8)
-        # that lands inside the vtable pointer — meaningless as a Vector3.
-        # Fall back to m_vecOrigin (local origin = world origin for rootless pawns).
-        if not off_origin or off_origin <= 8:
-            off_origin = self._off("CGameSceneNode", "m_vecOrigin")
         if not off_node or not off_origin:
             return 0.0, 0.0, 0.0
         node = self.mem.ptr(entity_ptr + off_node)
         if not node:
             return 0.0, 0.0, 0.0
+
+        # One-time diagnostic: log node ptr + candidate position offsets so we
+        # can find the correct m_vecAbsOrigin for this CS2 build.
+        if not getattr(self, "_origin_diag_done", False):
+            self._origin_diag_done = True
+            try:
+                blob = self.mem._read(node, 300)
+                candidates = {}
+                for off in [4, 16, 48, 64, 80, 96, 112, 128, 160, 164, 184, 200]:
+                    if off + 12 <= len(blob):
+                        import struct as _s
+                        x, y, z = _s.unpack_from("<fff", blob, off)
+                        if -100000 < x < 100000 and -100000 < y < 100000 and abs(z) < 10000:
+                            candidates[off] = (round(x,1), round(y,1), round(z,1))
+                log.warning("ORIGIN-DIAG ent=0x%X node=0x%X node_valid=%s; "
+                            "candidate offsets (x,y,z): %s",
+                            entity_ptr, node, _valid_ptr(node), candidates)
+            except Exception as e:
+                log.warning("ORIGIN-DIAG failed: %s", e)
+
         base = node + off_origin
         return self.mem.f32(base), self.mem.f32(base + 4), self.mem.f32(base + 8)
 

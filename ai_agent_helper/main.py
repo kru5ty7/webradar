@@ -1327,7 +1327,10 @@ class CS2Reader:
                     # indicate a non-schema data context — skip them.
                     if type_ptr == 0 or _valid_ptr(type_ptr):
                         off = struct.unpack_from("<I", dump, pos + 0x10)[0]
-                        if 0 < off < 0x8000:
+                        # Floor of 64: skip offsets that land inside the vtable area
+                        # or come from tiny helper structs (e.g. offset=4 false matches).
+                        # Real game-field offsets are always well above 64.
+                        if 64 <= off < 0x8000:
                             candidates.append(off)
                 pos = dump.find(needle, pos + 8)
             return min(candidates) if candidates else 0
@@ -1343,9 +1346,14 @@ class CS2Reader:
 
         self._nv = found
         patched = 0
+        _FLOOR = 64  # scanner offsets below this are spurious (vtable area / bad layout read)
         for cls, fields in self._f.items():
             for fname, off in found.items():
                 if fname in fields and fields[fname] != off:
+                    if off < _FLOOR:
+                        log.debug("offset refresh: skipping %s.%s = %d (below floor %d)",
+                                  cls, fname, off, _FLOOR)
+                        continue
                     fields[fname] = off
                     patched += 1
         self._offsets["_linux_fields"] = {"_ts": time.time(), "map": found}
@@ -2287,8 +2295,16 @@ class CS2Reader:
                         x, y, z = _s.unpack_from("<fff", node_blob, off)
                         if -100000 < x < 100000 and -100000 < y < 100000 and abs(z) < 10000:
                             node_coords[off] = (round(x, 1), round(y, 1), round(z, 1))
-                log.warning("ORIGIN-DIAG1 ent=0x%X off_node=%d node=0x%X valid=%s coords@node: %s",
-                            entity_ptr, off_node, node, _valid_ptr(node), node_coords)
+                cls_name = self._class_name(entity_ptr)
+                # Also scan entity memory for dwords == 2 or 3 (team numbers) to verify m_iTeamNum
+                ent_blob2 = self.mem._read(entity_ptr, 4096)
+                team_hits = []
+                for _to in range(0, len(ent_blob2) - 3, 4):
+                    dw = _s.unpack_from("<I", ent_blob2, _to)[0]
+                    if dw in (2, 3):
+                        team_hits.append(_to)
+                log.warning("ORIGIN-DIAG1 ent=0x%X cls=%r off_node=%d node=0x%X valid=%s coords@node: %s team_dword_offsets(2or3): %s",
+                            entity_ptr, cls_name, off_node, node, _valid_ptr(node), node_coords, team_hits[:20])
 
                 # Step 2: scan entity memory for any pointer whose target has
                 # non-zero plausible coordinates (find the real game scene node).
@@ -2304,7 +2320,7 @@ class CS2Reader:
                             if coord_off + 12 > len(nb):
                                 continue
                             x, y, z = _s.unpack_from("<fff", nb, coord_off)
-                            if (500 < abs(x) < 30000 or 500 < abs(y) < 30000) and abs(z) < 5000:
+                            if (50 < abs(x) < 30000 or 50 < abs(y) < 30000) and abs(z) < 5000:
                                 hits[off] = (coord_off, round(x,1), round(y,1), round(z,1))
                                 break
                     except Exception:

@@ -2268,6 +2268,11 @@ class CS2Reader:
     def _origin(self, entity_ptr: int) -> tuple[float, float, float]:
         off_node   = self._off("C_BaseEntity", "m_pGameSceneNode")
         off_origin = self._off("CGameSceneNode", "m_vecAbsOrigin")
+        # After some CS2 updates m_vecAbsOrigin gets a very small offset (≤8)
+        # that lands inside the vtable pointer — meaningless as a Vector3.
+        # Fall back to m_vecOrigin (local origin = world origin for rootless pawns).
+        if not off_origin or off_origin <= 8:
+            off_origin = self._off("CGameSceneNode", "m_vecOrigin")
         if not off_node or not off_origin:
             return 0.0, 0.0, 0.0
         node = self.mem.ptr(entity_ptr + off_node)
@@ -2717,23 +2722,6 @@ class CS2Reader:
 
         off_team = self._off("C_BaseEntity", "m_iTeamNum")
         local_team = self.mem.u32(lpc + off_team) if off_team else 0
-
-        # One-time diagnostic: scan controller memory for any offset that holds
-        # a team value (2=T or 3=CT). Logs on first frame where team reads wrong.
-        if local_team not in (2, 3) and not getattr(self, "_team_scan_done", False):
-            self._team_scan_done = True
-            hits = []
-            try:
-                blob = self.mem._read(lpc, 3000)
-                for i in range(0, 3000 - 3, 4):
-                    v = int.from_bytes(blob[i:i+4], "little")
-                    if v in (2, 3):
-                        hits.append((i, v))
-            except Exception:
-                pass
-            log.warning("TEAM-SCAN lpc=0x%X off_team=%d raw=%d; offsets with team value: %s",
-                        lpc, off_team, local_team,
-                        hits[:20] if hits else "NONE")
 
         # Keep broadcasting with the last known team during brief transitions
         # (half-time swap, round restart) so the webapp doesn't freeze.

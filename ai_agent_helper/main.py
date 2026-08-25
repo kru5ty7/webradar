@@ -1233,6 +1233,7 @@ class CS2Reader:
         self._last_hi_log       = 0.0 # monotonic time of last hi-slot census log
         self._last_local_team   = 0   # last known valid team (2=T, 3=CT)
         self._lpc_fallback      = 0   # cached lpc when dwLocalPlayerController offset is wrong (Linux)
+        self._lpc_via_steam     = False  # True when _lpc_fallback was matched by steam_id (vs. flag)
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
         self._linux_vm_addr     = 0   # resolved view-matrix addr (Linux; session-specific, never persisted)
         self._last_vm_scan      = 0.0 # monotonic time of last view-matrix .bss scan
@@ -2357,14 +2358,17 @@ class CS2Reader:
         """
         off_steam = self._off("CBasePlayerController", "m_steamID")
         if self._lpc_fallback:
-            if not (self.steam_ids and off_steam):
+            if self._lpc_via_steam and (self.steam_ids and off_steam):
+                # Validate steam_id only when lpc was originally found that way.
+                try:
+                    if self.mem.u64(self._lpc_fallback + off_steam) in self.steam_ids:
+                        return self._lpc_fallback
+                except Exception:
+                    pass
+                self._lpc_fallback = 0   # stale — entity recycled on map change
+            else:
+                # Found via m_bIsLocalPlayerController flag — no steam_id re-check.
                 return self._lpc_fallback
-            try:
-                if self.mem.u64(self._lpc_fallback + off_steam) in self.steam_ids:
-                    return self._lpc_fallback
-            except Exception:
-                pass
-            self._lpc_fallback = 0   # stale — entity recycled on map change
 
         now = time.monotonic()
         if now - self._last_lpc_scan < 2.0:
@@ -2414,6 +2418,7 @@ class CS2Reader:
                         log.info("lpc fallback: local controller matched by steam_id via idx=%d (%s) ctrl=0x%X",
                                  idx, cls, controller)
                         self._lpc_fallback = controller
+                        self._lpc_via_steam = True
                         return controller
                 except Exception:
                     pass
@@ -2432,6 +2437,7 @@ class CS2Reader:
             else:
                 log.info("lpc fallback: local controller found via flag ctrl=0x%X", flag_hit)
             self._lpc_fallback = flag_hit
+            self._lpc_via_steam = False
             return flag_hit
 
         # Always log entity scan summary at WARNING level so it shows up without --debug
@@ -2457,6 +2463,7 @@ class CS2Reader:
                                     log.info("lpc direct-slot: local controller by steam_id slot=%d ctrl=0x%X",
                                              slot, ctrl)
                                     self._lpc_fallback = ctrl
+                                    self._lpc_via_steam = True
                                     return ctrl
                             except Exception:
                                 pass
@@ -2469,6 +2476,7 @@ class CS2Reader:
                     if flag_hit2:
                         log.info("lpc direct-slot: local controller via flag ctrl=0x%X", flag_hit2)
                         self._lpc_fallback = flag_hit2
+                        self._lpc_via_steam = False
                         return flag_hit2
             except Exception as e:
                 log.debug("lpc direct-slot scan failed: %s", e)
@@ -2488,6 +2496,7 @@ class CS2Reader:
                                     log.info("lpc direct-slot (win): local controller by steam_id slot=%d ctrl=0x%X",
                                              slot, ctrl)
                                     self._lpc_fallback = ctrl
+                                    self._lpc_via_steam = True
                                     return ctrl
                             except Exception:
                                 pass
@@ -2500,6 +2509,7 @@ class CS2Reader:
                     if flag_hit2:
                         log.info("lpc direct-slot (win): local controller via flag ctrl=0x%X", flag_hit2)
                         self._lpc_fallback = flag_hit2
+                        self._lpc_via_steam = False
                         return flag_hit2
             except Exception as e:
                 log.debug("lpc direct-slot scan (win) failed: %s", e)
@@ -2707,6 +2717,23 @@ class CS2Reader:
 
         off_team = self._off("C_BaseEntity", "m_iTeamNum")
         local_team = self.mem.u32(lpc + off_team) if off_team else 0
+
+        # One-time diagnostic: scan controller memory for any offset that holds
+        # a team value (2=T or 3=CT). Logs on first frame where team reads wrong.
+        if local_team not in (2, 3) and not getattr(self, "_team_scan_done", False):
+            self._team_scan_done = True
+            hits = []
+            try:
+                blob = self.mem._read(lpc, 3000)
+                for i in range(0, 3000 - 3, 4):
+                    v = int.from_bytes(blob[i:i+4], "little")
+                    if v in (2, 3):
+                        hits.append((i, v))
+            except Exception:
+                pass
+            log.warning("TEAM-SCAN lpc=0x%X off_team=%d raw=%d; offsets with team value: %s",
+                        lpc, off_team, local_team,
+                        hits[:20] if hits else "NONE")
 
         # Keep broadcasting with the last known team during brief transitions
         # (half-time swap, round restart) so the webapp doesn't freeze.

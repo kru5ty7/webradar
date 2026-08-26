@@ -1197,6 +1197,24 @@ _GRENADE_CLASS_TO_TYPE = {
 }
 _GRENADE_CLASSES = set(_GRENADE_CLASS_TO_TYPE)
 
+
+def _cls_eq(cls: str, *names: str) -> bool:
+    """Compare a runtime class name against one or more expected names,
+    ignoring the ``C_`` prefix.
+
+    cs2-dumper spells client classes with the prefix (``C_CSPlayerPawn``) but
+    the names read out of the live Linux binary have none (``CCSPlayerPawn``).
+    Comparing the two spellings directly silently fails every match.
+    """
+    if not cls:
+        return False
+    c = cls[2:] if cls.startswith("C_") else cls[1:] if cls.startswith("C") else cls
+    for n in names:
+        m = n[2:] if n.startswith("C_") else n[1:] if n.startswith("C") else n
+        if c == m:
+            return True
+    return False
+
 # Designer names (Hammer/entity-factory names) → C++ class names used in comparisons.
 # Used as fallback when the classinfo chain is unavailable (e.g. Windows CS2 post-update).
 _DESIGNER_TO_CLASS: dict[str, str] = {
@@ -2115,9 +2133,15 @@ class CS2Reader:
         return 0, 112
 
     def _entity_by_handle(self, handle: int, chunk_cache: dict) -> int:
-        if handle == INVALID_EHANDLE:
+        # A zero handle is unset, not "entity 0". Without this it resolves to
+        # entity index 0 — CWorld — which is a valid pointer, so callers that
+        # only check `if not ent` accept the world entity as a real result.
+        if handle == INVALID_EHANDLE or handle == 0:
             return 0
-        return self._entity_ptr(handle & ENT_ENTRY_MASK, chunk_cache)
+        idx = handle & ENT_ENTRY_MASK
+        if idx == 0:
+            return 0
+        return self._entity_ptr(idx, chunk_cache)
 
     def _class_name(self, entity_ptr: int) -> str:
         """Resolve the schema class name for an entity."""
@@ -2559,7 +2583,7 @@ class CS2Reader:
             # Linux: the entity list reliably exposes pawns; walk back to the
             # controller via m_hController since class_name for controllers is
             # unreliable across the Win/Linux ABI difference.
-            elif cls in ("C_CSPlayerPawn", "C_CSObserverPawn") and off_hctrl:
+            elif _cls_eq(cls, "C_CSPlayerPawn", "C_CSObserverPawn") and off_hctrl:
                 h = self.mem.u32(ent + off_hctrl)
                 controller = self._entity_by_handle(h, cache) if h != INVALID_EHANDLE else 0
                 if not controller:
@@ -2890,7 +2914,12 @@ class CS2Reader:
         off_health   = self._off("C_BaseEntity",         "m_iHealth")
         off_team_    = self._off("C_BaseEntity",         "m_iTeamNum")
         off_owner    = self._off("C_BaseEntity",         "m_hOwnerEntity")
-        off_hpawn    = self._off("CBasePlayerController","m_hPawn")
+        # CCSPlayerController.m_hPlayerPawn is the CHandle that actually points at
+        # the player's pawn. CBasePlayerController.m_hPawn reads 0 on this build,
+        # and handle 0 resolves to entity index 0 (CWorld) rather than failing —
+        # so the old code silently used the world entity as every player's pawn.
+        off_hpawn    = (self._off("CCSPlayerController", "m_hPlayerPawn")
+                        or self._off("CBasePlayerController", "m_hPawn"))
         off_hctrl    = self._off("C_BasePlayerPawn", "m_hController") or self._nv_off("m_hController")
         off_steam    = self._off("CBasePlayerController","m_steamID")
         off_name     = self._off("CCSPlayerController",  "m_sSanitizedPlayerName")
@@ -3021,8 +3050,8 @@ class CS2Reader:
             # Windows enters on the controller; native Linux enters on the pawn
             # (its class_name resolves reliably where the controller's may not)
             # and walks back to the controller via m_hController.
-            _is_ctrl = (cls == "CCSPlayerController")
-            _is_pawn = (cls in ("C_CSPlayerPawn", "C_CSObserverPawn"))
+            _is_ctrl = _cls_eq(cls, "CCSPlayerController")
+            _is_pawn = _cls_eq(cls, "C_CSPlayerPawn", "C_CSObserverPawn")
             if _is_ctrl or (IS_LINUX and _is_pawn):
                 self._gate_diag(idx, ent, cls, _is_ctrl, off_hpawn, off_hctrl,
                                 off_team_, chunk_cache)

@@ -2358,47 +2358,6 @@ class CS2Reader:
                     self._classinfo_id_off, self._classinfo_name1_off, self._classinfo_name2_off)
         return False
 
-    def _gate_diag(self, idx, ent, cls, is_ctrl, off_hpawn, off_hctrl,
-                   off_team, chunk_cache) -> None:
-        """One-shot trace of the controller→pawn→team chain in collect().
-
-        Weapons render but players don't, so the entity walk and _origin() are
-        fine and the loss is somewhere in these gates. Reports both m_hPawn
-        candidates (CBasePlayerController.m_hPawn vs CCSPlayerController.
-        m_hPlayerPawn) since only one is right for this build.
-        """
-        n = getattr(self, "_gate_diag_n", 0)
-        if n >= 6:
-            return
-        self._gate_diag_n = n + 1
-        try:
-            parts = [f"idx={idx} cls={cls} is_ctrl={is_ctrl} ent=0x{ent:X}"]
-            if is_ctrl:
-                for label, off in (("m_hPawn", off_hpawn),
-                                   ("m_hPlayerPawn",
-                                    self._off("CCSPlayerController", "m_hPlayerPawn"))):
-                    if not off:
-                        parts.append(f"{label}: OFFSET=0")
-                        continue
-                    h = self.mem.u32(ent + off)
-                    p = self._entity_by_handle(h, chunk_cache) if h != INVALID_EHANDLE else 0
-                    parts.append(f"{label}@{off}: h=0x{h:X} pawn=0x{p:X} "
-                                 f"cls={self._class_name(p) if p else '-'}")
-                tb = self.mem._read(ent, 1400)
-                parts.append(f"team_byte@{off_team}="
-                             f"{tb[off_team] if off_team < len(tb) else '?'}")
-            else:
-                h = self.mem.u32(ent + off_hctrl) if off_hctrl else INVALID_EHANDLE
-                c = self._entity_by_handle(h, chunk_cache) if h != INVALID_EHANDLE else 0
-                parts.append(f"m_hController@{off_hctrl}: h=0x{h:X} ctrl=0x{c:X} "
-                             f"cls={self._class_name(c) if c else '-'}")
-                pb = self.mem._read(ent, 1400)
-                parts.append(f"pawn_team_byte@{off_team}="
-                             f"{pb[off_team] if off_team < len(pb) else '?'}")
-            log.warning("GATE-DIAG %s", " | ".join(parts))
-        except Exception as exc:
-            log.warning("GATE-DIAG failed: %s", exc)
-
     def _team_diag(self, lpc: int, off_team: int) -> None:
         """One-shot dump when the local team can't be read.
 
@@ -3053,8 +3012,6 @@ class CS2Reader:
             _is_ctrl = _cls_eq(cls, "CCSPlayerController")
             _is_pawn = _cls_eq(cls, "C_CSPlayerPawn", "C_CSObserverPawn")
             if _is_ctrl or (IS_LINUX and _is_pawn):
-                self._gate_diag(idx, ent, cls, _is_ctrl, off_hpawn, off_hctrl,
-                                off_team_, chunk_cache)
                 if _is_ctrl:
                     ctrl = ent
                     h_pawn = self.mem.u32(ctrl + off_hpawn) if off_hpawn else INVALID_EHANDLE

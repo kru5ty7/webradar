@@ -2334,6 +2334,50 @@ class CS2Reader:
                     self._classinfo_id_off, self._classinfo_name1_off, self._classinfo_name2_off)
         return False
 
+    def _team_diag(self, lpc: int, off_team: int) -> None:
+        """One-shot dump when the local team can't be read.
+
+        m_iTeamNum is a uint8 at an odd offset (999 Windows / 1367 live Linux),
+        so this scans BYTE-wise — a dword scan on 4-aligned offsets never even
+        looks at either candidate.
+        """
+        if getattr(self, "_team_diag_done", False):
+            return
+        self._team_diag_done = True
+        try:
+            cls = self._class_name(lpc)
+            blob = self.mem._read(lpc, 4096)
+            cands = [o for o, b in enumerate(blob) if b in (2, 3)]
+            # Which candidate offsets look like a team byte followed by padding?
+            clean = [o for o in cands if blob[o + 1:o + 4] == b"\x00\x00\x00"]
+            log.warning(
+                "TEAM-DIAG lpc=0x%X cls=%r off_team=%d byte@off_team=%s | "
+                "byte@999=%s byte@1367=%s | %d byte offsets hold 2/3; "
+                "with 3 zero bytes after: %s",
+                lpc, cls, off_team,
+                blob[off_team] if off_team < len(blob) else "oob",
+                blob[999] if len(blob) > 999 else "oob",
+                blob[1367] if len(blob) > 1367 else "oob",
+                len(cands), clean[:40])
+            # How many player controllers exist, and what team byte does each
+            # carry? Distinguishes "not in a match" from "in a match but reading
+            # the wrong offset".
+            cache: dict = {}
+            rows = []
+            for idx in range(1, 128):
+                e = self._entity_ptr(idx, cache)
+                if not e or self._class_name(e) != "CCSPlayerController":
+                    continue
+                b = self.mem._read(e, 1400)
+                rows.append(f"idx={idx} @{off_team}={b[off_team] if off_team < len(b) else '?'} "
+                            f"@999={b[999] if len(b) > 999 else '?'} "
+                            f"@1367={b[1367] if len(b) > 1367 else '?'}")
+            log.warning("TEAM-DIAG %d player controllers (a live match has one per "
+                        "player; 0-1 means menu/lobby): %s",
+                        len(rows), " | ".join(rows) if rows else "none")
+        except Exception as exc:
+            log.warning("TEAM-DIAG failed: %s", exc)
+
     # ── scene origin ──────────────────────────────────────────────────────────
     def _origin(self, entity_ptr: int) -> tuple[float, float, float]:
         off_node   = self._off("C_BaseEntity", "m_pGameSceneNode")
@@ -2797,6 +2841,7 @@ class CS2Reader:
         elif hasattr(self, "_last_local_team") and self._last_local_team:
             local_team = self._last_local_team
         else:
+            self._team_diag(lpc, off_team)
             return None
 
         map_name = self._get_map_name()

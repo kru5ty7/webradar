@@ -1215,6 +1215,21 @@ def _cls_eq(cls: str, *names: str) -> bool:
             return True
     return False
 
+
+_SPECIAL_CLASSES = ("C_C4", "C_PlantedC4", *_GRENADE_CLASSES)
+_canon_cache: dict[str, str] = {}
+
+
+def _canon_special(cls: str) -> str:
+    """Map a runtime class name onto its a2x spelling if it is a bomb or
+    grenade class (``CC4`` -> ``C_C4``), else return "". Exact comparisons
+    against ``"C_C4"`` never match on Linux, where names lack the prefix."""
+    r = _canon_cache.get(cls)
+    if r is None:
+        r = next((n for n in _SPECIAL_CLASSES if _cls_eq(cls, n)), "")
+        _canon_cache[cls] = r
+    return r
+
 # Designer names (Hammer/entity-factory names) → C++ class names used in comparisons.
 # Used as fallback when the classinfo chain is unavailable (e.g. Windows CS2 post-update).
 _DESIGNER_TO_CLASS: dict[str, str] = {
@@ -2241,8 +2256,8 @@ class CS2Reader:
                     continue
                 idx = (chunk << 9) | slot
                 if p and _valid_ptr(p):
-                    cls = self._class_name(p)
-                    if cls == "C_C4" or cls == "C_PlantedC4" or cls in _GRENADE_CLASSES:
+                    cls = _canon_special(self._class_name(p))
+                    if cls:
                         self._hi_targets[idx] = (p, cls)
                         continue
                 self._hi_targets.pop(idx, None)
@@ -2905,7 +2920,7 @@ class CS2Reader:
         bomb_data = {}
         grenades  = []
         dropped   = []
-        bomb_own_idx = self._bomb_own_idx
+        carrier_idx = 0   # entity index of the pawn carrying the C4 this frame
 
         chunk_cache: dict[int, int] = {}
         seen_ctrls: set[int] = set()   # dedupe: a player is reachable via both its controller and pawn
@@ -2914,22 +2929,23 @@ class CS2Reader:
         def _special(ent: int, cls: str) -> bool:
             """Handle carried C4 / planted C4 / grenade entities. Shared between
             the 0..1023 walk and the high-slot targets from _hi_sweep()."""
-            nonlocal bomb_data, bomb_own_idx
+            nonlocal bomb_data, carrier_idx
+            cls = _canon_special(cls)
+            if not cls:
+                return False
 
             # ── carried c4 ───────────────────────────────────────────────────
             if cls == "C_C4":
                 owner = 0
                 if off_owner:
                     h_own = self.mem.u32(ent + off_owner)
-                    if h_own != INVALID_EHANDLE:
-                        self._bomb_own_idx = h_own & 0xFFFF
-                        bomb_own_idx       = self._bomb_own_idx
-                        owner = self._entity_by_handle(h_own, chunk_cache)
-                x, y, _ = self._origin(ent)
-                if not (x or y) and owner:
-                    # a carried C4 that was never rendered reads (0,0,0) —
-                    # use the carrier's position instead
-                    x, y, _ = self._origin(owner)
+                    owner = self._entity_by_handle(h_own, chunk_cache)
+                    if owner:
+                        carrier_idx = h_own & ENT_ENTRY_MASK
+                # A carried C4's own scene node is stale (it holds wherever the
+                # bomb was picked up, or 0,0,0 if never rendered), so a carried
+                # bomb is wherever its carrier is.
+                x, y, _ = self._origin(owner) if owner else self._origin(ent)
                 if x or y:
                     bomb_data = {"x": x, "y": y}
                 return True
@@ -3071,9 +3087,7 @@ class CS2Reader:
                         has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
 
                 weapons  = self._read_weapons(pawn, chunk_cache)
-                has_bomb = False
-                if team == 2 and not is_dead and bomb_own_idx:
-                    has_bomb = bomb_own_idx == ((h_pawn & ENT_ENTRY_MASK) & 0xFFFF)
+                has_bomb = False   # resolved after the C4 pass below
 
                 if ctrl == lpc and not is_dead:
                     local_pawn = pawn   # for Linux view-matrix resolution below
@@ -3105,6 +3119,7 @@ class CS2Reader:
                     "m_has_defuser":has_defuser,
                     "m_weapons":    weapons,
                     "m_has_bomb":   has_bomb,
+                    "_pawn_idx":    h_pawn & ENT_ENTRY_MASK,
                 })
 
             # ── carried c4 / planted c4 / grenades ───────────────────────────
@@ -3187,9 +3202,7 @@ class CS2Reader:
                                 has_helmet  = self.mem.bool8(isvc + off_helmet)  if off_helmet  else False
                                 has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
                         weapons  = self._read_weapons(pawn, chunk_cache)
-                        has_bomb = False
-                        if team == 2 and not is_dead and bomb_own_idx:
-                            has_bomb = bomb_own_idx == ((h_pawn & ENT_ENTRY_MASK) & 0xFFFF)
+                        has_bomb = False   # resolved after the C4 pass below
                         if ctrl == lpc and not is_dead:
                             local_pawn = pawn
                         players.append({
@@ -3210,6 +3223,7 @@ class CS2Reader:
                             "m_has_defuser":has_defuser,
                             "m_weapons":    weapons,
                             "m_has_bomb":   has_bomb,
+                            "_pawn_idx":    h_pawn & ENT_ENTRY_MASK,
                         })
             except Exception as e:
                 log.debug("direct-slot player collection failed: %s", e)
@@ -3256,9 +3270,7 @@ class CS2Reader:
                                 has_helmet  = self.mem.bool8(isvc + off_helmet)  if off_helmet  else False
                                 has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
                         weapons  = self._read_weapons(pawn, chunk_cache)
-                        has_bomb = False
-                        if team == 2 and not is_dead and bomb_own_idx:
-                            has_bomb = bomb_own_idx == ((h_pawn & ENT_ENTRY_MASK) & 0xFFFF)
+                        has_bomb = False   # resolved after the C4 pass below
                         if ctrl == lpc and not is_dead:
                             local_pawn = pawn
                         players.append({
@@ -3279,6 +3291,7 @@ class CS2Reader:
                             "m_has_defuser":has_defuser,
                             "m_weapons":    weapons,
                             "m_has_bomb":   has_bomb,
+                            "_pawn_idx":    h_pawn & ENT_ENTRY_MASK,
                         })
             except Exception as e:
                 log.debug("direct-slot player collection (win) failed: %s", e)
@@ -3363,18 +3376,16 @@ class CS2Reader:
                     base_addr = self.client_base + dw_c4w
 
                     def _try_c4_entity(c4: int) -> bool:
-                        nonlocal bomb_data
+                        nonlocal bomb_data, carrier_idx
                         if not c4:
                             return False
-                        x, y, _ = self._origin(c4)
-                        if not (x or y):
-                            off_own = self._off("C_BaseEntity", "m_hOwnerEntity")
-                            if off_own:
-                                h_own = self.mem.u32(c4 + off_own)
-                                if h_own != INVALID_EHANDLE:
-                                    owner = self._entity_by_handle(h_own, chunk_cache)
-                                    if owner:
-                                        x, y, _ = self._origin(owner)
+                        owner = 0
+                        if off_owner:
+                            h_own = self.mem.u32(c4 + off_owner)
+                            owner = self._entity_by_handle(h_own, chunk_cache)
+                            if owner:
+                                carrier_idx = h_own & ENT_ENTRY_MASK
+                        x, y, _ = self._origin(owner) if owner else self._origin(c4)
                         if x or y:
                             bomb_data = {"x": x, "y": y}
                             return True
@@ -3391,8 +3402,7 @@ class CS2Reader:
                             if ep and _valid_ptr(ep):
                                 chunk_cache[ch] = ep
                                 c4 = self._entity_by_handle(handle, chunk_cache)
-                        if _try_c4_entity(c4):
-                            self._bomb_own_idx = handle & 0xFFFF
+                        _try_c4_entity(c4)
 
                     # Try as C_C4* direct pointer (8-byte)
                     if not bomb_data:
@@ -3402,6 +3412,13 @@ class CS2Reader:
 
                 except Exception as e:
                     log.warning("dwWeaponC4 global fallback failed: %s", e)
+
+        # The C4 sits at a higher entity slot than every player, so the carrier
+        # is only known once the whole walk (and the fallbacks) have run.
+        self._bomb_own_idx = carrier_idx
+        for p in players:
+            pidx = p.pop("_pawn_idx", 0)
+            p["m_has_bomb"] = bool(carrier_idx) and pidx == carrier_idx and not p["m_is_dead"]
 
         if IS_LINUX:
             # The Windows dwViewMatrix RVA points at unrelated bytes on Linux.

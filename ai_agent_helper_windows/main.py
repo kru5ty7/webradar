@@ -1,0 +1,2815 @@
+#!/usr/bin/env python3
+"""
+cs2_radar — combined CS2 memory reader + WebSocket server + HTTP static server.
+Double-click the compiled exe to start everything; a browser tab opens automatically.
+"""
+import asyncio
+import ctypes
+import socket
+import http.server
+import json
+import logging
+import logging.handlers
+import math
+import os
+import re
+import struct
+import sys
+import threading
+import time
+import urllib.request
+import webbrowser
+from pathlib import Path
+
+from platform_utils import (
+    IS_WINDOWS,
+    client_module_aliases,
+    cs2_process_names,
+    find_client_binary,
+    find_cs2_root,
+)
+
+if not IS_WINDOWS:
+    sys.exit("[error] this is the Windows build of the radar helper; "
+             "use ai_agent_helper/ on Linux")
+
+import ctypes.wintypes as wintypes  # noqa: E402
+
+try:
+    import websockets
+except ImportError:
+    print("[error] websockets not installed. Run: pip install websockets")
+    sys.exit(1)
+
+try:
+    from version import VERSION
+except ImportError:
+    VERSION = "v12"
+
+GITHUB_REPO = "kru5ty7/webradar"
+GITHUB_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+# ── config ────────────────────────────────────────────────────────────────────
+# When frozen (PyInstaller onefile), __file__ is inside the temp _MEIPASS dir
+# which is deleted on exit. Use sys.executable's dir so config persists next to the exe.
+ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+CONFIG_FILE = ROOT / "config.json"
+CACHE_FILE  = ROOT / "offsets_cache.json"
+LOG_FILE    = ROOT / "radar.log"
+
+WS_PORT       = 22006
+HTTP_PORT     = 5173   # built-dist server; same port as Vite so URLs always match
+
+def _get_local_ip() -> str:
+    """Return this machine's LAN IP by probing a UDP route (no packet sent)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+_LOCAL_IP = _get_local_ip()   # cached once at startup
+
+def _get_tailscale_ip() -> str | None:
+    """Return the Tailscale IP (100.64.0.0/10) if Tailscale is running, else None."""
+    # Try the CLI first — most reliable
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            capture_output=True, text=True, timeout=3
+        )
+        ip = r.stdout.strip()
+        if r.returncode == 0 and ip:
+            return ip
+    except Exception:
+        pass
+    # Fallback: scan network interfaces for Tailscale's CGNAT range 100.64–100.127
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            parts = ip.split(".")
+            if len(parts) == 4 and parts[0] == "100" and 64 <= int(parts[1]) <= 127:
+                return ip
+    except Exception:
+        pass
+    return None
+
+_TAILSCALE_IP = _get_tailscale_ip()   # None if Tailscale not running
+
+# ── Tailscale Funnel ──────────────────────────────────────────────────────────
+
+def _tailscale_installed() -> bool:
+    import shutil
+    found = shutil.which("tailscale") is not None
+    log.debug("tailscale installed: %s", found)
+    return found
+
+def _download_with_progress(url: str, dest: str):
+    import time
+    log.info("tailscale: downloading %s → %s", url, dest)
+    start = time.time()
+    def _hook(count, block, total):
+        done = count * block
+        elapsed = max(time.time() - start, 0.001)
+        speed = done / elapsed
+        if total > 0:
+            pct = min(100, done * 100 // total)
+            bar = "█" * (pct // 3) + "░" * (33 - pct // 3)
+            print(f"\r  [{bar}] {pct:3d}%  {speed/1024:6.0f} KB/s", end="", flush=True)
+        else:
+            print(f"\r  {done//1024} KB  {speed/1024:.0f} KB/s", end="", flush=True)
+    try:
+        urllib.request.urlretrieve(url, dest, _hook)
+        print()
+        elapsed = time.time() - start
+        log.info("tailscale: download complete in %.1fs", elapsed)
+    except Exception:
+        print()
+        log.exception("tailscale: download failed")
+        raise
+
+def _install_tailscale():
+    import subprocess, tempfile
+
+    log.info("tailscale: attempting install via winget")
+    print("  Installing Tailscale via winget...")
+    try:
+        r = subprocess.run(
+            ["winget", "install", "--id", "Tailscale.Tailscale",
+             "--silent", "--accept-package-agreements", "--accept-source-agreements"],
+            capture_output=True, text=True, timeout=120
+        )
+        log.info("tailscale: winget exit=%d stdout=%s stderr=%s",
+                 r.returncode, r.stdout.strip()[:200], r.stderr.strip()[:200])
+        if r.returncode == 0:
+            log.info("tailscale: winget install succeeded")
+            return
+    except Exception:
+        log.exception("tailscale: winget raised an exception")
+
+    log.warning("tailscale: winget failed — falling back to MSI download")
+    print("  winget failed — downloading MSI installer...")
+    msi = tempfile.mktemp(suffix=".exe")
+    try:
+        _download_with_progress(
+            "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe", msi
+        )
+        r2 = subprocess.run([msi, "/quiet"], capture_output=True, text=True, timeout=120)
+        log.info("tailscale: MSI install exit=%d stderr=%s", r2.returncode, r2.stderr.strip()[:200])
+    except Exception:
+        log.exception("tailscale: MSI install raised an exception")
+    finally:
+        try:
+            os.unlink(msi)
+        except Exception:
+            pass
+    return
+
+
+    log.warning("tailscale: automatic install unsupported on %s", sys.platform)
+
+def _tailscale_logged_in() -> bool:
+    import subprocess
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"],
+                           capture_output=True, text=True, timeout=5)
+        log.debug("tailscale status exit=%d", r.returncode)
+        if r.returncode != 0:
+            log.warning("tailscale: status check failed (exit %d): %s", r.returncode, r.stderr.strip())
+            return False
+        data = json.loads(r.stdout)
+        state = data.get("BackendState", "unknown")
+        log.debug("tailscale BackendState: %s", state)
+        return state == "Running"
+    except Exception:
+        log.exception("tailscale: logged-in check raised an exception")
+        return False
+
+def _get_funnel_url() -> str | None:
+    import subprocess
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            log.warning("tailscale: status failed when fetching funnel URL")
+            return None
+        data = json.loads(r.stdout)
+        dns = data.get("Self", {}).get("DNSName", "").rstrip(".")
+        if dns:
+            url = f"https://{dns}"
+            log.info("tailscale: funnel URL = %s", url)
+            return url
+        log.warning("tailscale: DNSName not found in status output")
+    except Exception:
+        log.exception("tailscale: _get_funnel_url raised an exception")
+    return None
+
+def _start_funnel(port: int = None):
+    import subprocess
+    p = port or HTTP_PORT
+    log.info("tailscale: enabling funnel on port %d", p)
+    try:
+        # Step 1: serve — register local port with Tailscale (exits quickly with --bg)
+        r1 = subprocess.run(
+            ["tailscale", "serve", "--bg", str(p)],
+            capture_output=True, text=True, timeout=15,
+        )
+        log.info("tailscale: serve --bg exit=%d stdout=%s stderr=%s",
+                 r1.returncode, r1.stdout.strip()[:200], r1.stderr.strip()[:200])
+
+        # Step 2: funnel — expose serve endpoint publicly (exits quickly with --bg)
+        r2 = subprocess.run(
+            ["tailscale", "funnel", "--bg", str(p)],
+            capture_output=True, text=True, timeout=15,
+        )
+        log.info("tailscale: funnel --bg exit=%d stdout=%s stderr=%s",
+                 r2.returncode, r2.stdout.strip()[:200], r2.stderr.strip()[:200])
+    except Exception:
+        log.exception("tailscale: _start_funnel raised an exception")
+
+def _setup_tailscale(cfg: dict) -> str | None:
+    """First-run interactive Tailscale Funnel setup. Returns public URL or None."""
+    log.info("tailscale: setup called (tailscale_funnel in cfg: %s)",
+             "tailscale_funnel" in cfg)
+    try:
+        if "tailscale_funnel" in cfg:
+            if not cfg["tailscale_funnel"]:
+                log.info("tailscale: funnel disabled in config — skipping")
+                return None
+            log.info("tailscale: funnel previously enabled — re-activating")
+            if _tailscale_installed() and _tailscale_logged_in():
+                _start_funnel()
+                return _get_funnel_url()
+            log.warning("tailscale: not installed or not logged in — cannot re-activate")
+            return None
+
+        # First time — ask user
+        print("\n" + "=" * 50)
+        print("  Tailscale Funnel — Global Access")
+        print("=" * 50)
+        print("  Let friends open the radar from ANYWHERE.")
+        print("  (They just need a browser — no install.)")
+        print("=" * 50)
+        try:
+            choice = input("  Enable Tailscale Funnel? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "n"
+
+        enabled = choice == "y"
+        log.info("tailscale: user chose enabled=%s", enabled)
+        cfg["tailscale_funnel"] = enabled
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+        if not enabled:
+            print("  Skipped. Edit config.json to enable later.\n")
+            return None
+
+        if not _tailscale_installed():
+            _install_tailscale()
+            if not _tailscale_installed():
+                log.error("tailscale: install failed — tailscale CLI still not found after install")
+                print("  Tailscale install failed — skipping Funnel.\n")
+                return None
+
+        if not _tailscale_logged_in():
+            import subprocess
+            log.info("tailscale: not logged in — opening browser login")
+            print("  Opening Tailscale login in your browser...")
+            try:
+                subprocess.run(["tailscale", "login"], timeout=120)
+            except Exception:
+                log.exception("tailscale: login command raised an exception")
+            if not _tailscale_logged_in():
+                log.error("tailscale: still not logged in after login attempt")
+                print("  Login incomplete — skipping Funnel.\n")
+                return None
+
+        _start_funnel()
+        url = _get_funnel_url()
+        if url:
+            log.info("tailscale: funnel active at %s", url)
+            print(f"  Funnel active: {url}\n")
+        else:
+            log.warning("tailscale: funnel started but could not determine public URL")
+        return url
+
+    except Exception:
+        log.exception("tailscale: _setup_tailscale raised an unexpected exception")
+        return None
+
+_FUNNEL_URL: str | None = None   # assigned in __main__ after _setup_tailscale()
+
+POLL_INTERVAL = 0.033  # ~30 Hz
+CACHE_MAX_AGE = 3600
+DUMPER_BASE   = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output"
+
+# ── logging ───────────────────────────────────────────────────────────────────
+def _setup_logging() -> logging.Logger:
+    fmt = logging.Formatter(
+        fmt="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    log = logging.getLogger("radar")
+    log.setLevel(logging.DEBUG)
+
+    # Console — INFO and above, coloured level tag
+    _COLOURS = {
+        "DEBUG":    "\033[36m",   # cyan
+        "INFO":     "\033[32m",   # green
+        "WARNING":  "\033[33m",   # yellow
+        "ERROR":    "\033[31m",   # red
+        "CRITICAL": "\033[35m",   # magenta
+    }
+    _RESET = "\033[0m"
+
+    class _ColouredFormatter(logging.Formatter):
+        def format(self, record: logging.LogRecord) -> str:
+            colour = _COLOURS.get(record.levelname, "")
+            record.levelname = f"{colour}{record.levelname:<8}{_RESET}"
+            return super().format(record)
+
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.DEBUG)
+    console.setFormatter(_ColouredFormatter(
+        fmt="%(asctime)s  %(levelname)s  %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    log.addHandler(console)
+
+    # Rotating file — DEBUG and above, plain text, keeps last 2 × 1 MB
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(fmt)
+    log.addHandler(file_handler)
+
+    # Silence noisy websocket-client internal chatter
+    logging.getLogger("websocket").setLevel(logging.WARNING)
+    # Suppress spurious "did not receive a valid HTTP request" from plain-HTTP
+    # probes hitting the WS port (non-fatal, server keeps running fine)
+    logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
+    logging.getLogger("websockets.asyncio.server").setLevel(logging.CRITICAL)
+
+    return log
+
+log = _setup_logging()
+
+# ── memory ────────────────────────────────────────────────────────────────────
+class _MemoryPrimitives:
+    def ptr(self, address: int) -> int:
+        v = struct.unpack_from("<Q", self._read(address, 8))[0]
+        # Require a plausible canonical user-space pointer.
+        return v if 0x1000 <= v < 0x7FFFFFFFFFFF else 0
+
+    def u64(self, address: int) -> int:
+        return struct.unpack_from("<Q", self._read(address, 8))[0]
+
+    def u32(self, address: int) -> int:
+        return struct.unpack_from("<I", self._read(address, 4))[0]
+
+    def i32(self, address: int) -> int:
+        return struct.unpack_from("<i", self._read(address, 4))[0]
+
+    def f32(self, address: int) -> float:
+        return struct.unpack_from("<f", self._read(address, 4))[0]
+
+    def bool8(self, address: int) -> bool:
+        d = self._read(address, 1)
+        return bool(d[0])
+
+    def cstring(self, address: int, max_len: int = 256) -> str:
+        if not address:
+            return ""
+        data = self._read(address, max_len)
+        end  = data.find(b"\x00")
+        raw  = data[:end] if end != -1 else data
+        return raw.decode("utf-8", errors="ignore")
+
+    def msvc_string(self, address: int) -> str:
+        """Read an MSVC std::string object stored at address in game memory."""
+        if not address:
+            return ""
+        size = self.u32(address + 0x10)
+        if size == 0 or size > 512:
+            return ""
+        if size < 16:
+            raw = self._read(address, size)
+        else:
+            ptr = self.ptr(address)
+            if not ptr:
+                return ""
+            raw = self._read(ptr, size)
+        return raw.decode("utf-8", errors="ignore").rstrip("\x00")
+
+    def string_field(self, address: int) -> str:
+        """Read a schema string field — tries char* first, then MSVC string."""
+        ptr = self.ptr(address)
+        if ptr:
+            s = self.cstring(ptr)
+            if s:
+                return s
+        return self.msvc_string(address)
+
+
+TH32CS_SNAPPROCESS  = 0x00000002
+TH32CS_SNAPMODULE   = 0x00000008
+TH32CS_SNAPMODULE32 = 0x00000010
+PROCESS_VM_READ     = 0x0010
+PROCESS_QUERY_INFO  = 0x0400
+INVALID_HANDLE      = ctypes.c_void_p(-1).value
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+class PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize",              wintypes.DWORD),
+        ("cntUsage",            wintypes.DWORD),
+        ("th32ProcessID",       wintypes.DWORD),
+        ("th32DefaultHeapID",   ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID",        wintypes.DWORD),
+        ("cntThreads",          wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase",      wintypes.LONG),
+        ("dwFlags",             wintypes.DWORD),
+        ("szExeFile",           ctypes.c_char * 260),
+    ]
+
+class MODULEENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize",        wintypes.DWORD),
+        ("th32ModuleID",  wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("GlblcntUsage",  wintypes.DWORD),
+        ("ProccntUsage",  wintypes.DWORD),
+        ("modBaseAddr",   ctypes.POINTER(wintypes.BYTE)),
+        ("modBaseSize",   wintypes.DWORD),
+        ("hModule",       wintypes.HMODULE),
+        ("szModule",      ctypes.c_char * 256),
+        ("szExePath",     ctypes.c_char * 260),
+    ]
+
+class Memory(_MemoryPrimitives):
+    def __init__(self):
+        self.handle = None
+        self.pid    = None
+
+    def find_pid(self, name: str) -> int | None:
+        wanted = {name.lower()}
+        if name.lower() == "cs2.exe":
+            wanted.update(n.lower() for n in cs2_process_names())
+
+        snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == INVALID_HANDLE:
+            return None
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        try:
+            if kernel32.Process32First(snap, ctypes.byref(entry)):
+                while True:
+                    if entry.szExeFile.decode(errors="ignore").lower() in wanted:
+                        return entry.th32ProcessID
+                    if not kernel32.Process32Next(snap, ctypes.byref(entry)):
+                        break
+        finally:
+            kernel32.CloseHandle(snap)
+        return None
+
+    def open(self, pid: int) -> bool:
+        self.pid    = pid
+        self.handle = kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFO, False, pid)
+        return bool(self.handle)
+
+    def close(self):
+        if self.handle:
+            kernel32.CloseHandle(self.handle)
+            self.handle = None
+            self.pid    = None
+
+    def get_module_base(self, dll: str) -> int:
+        snap = kernel32.CreateToolhelp32Snapshot(
+            TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, self.pid)
+        if snap == INVALID_HANDLE:
+            return 0
+        entry = MODULEENTRY32()
+        entry.dwSize = ctypes.sizeof(MODULEENTRY32)
+        try:
+            if kernel32.Module32First(snap, ctypes.byref(entry)):
+                while True:
+                    if entry.szModule.decode(errors="ignore").lower() in client_module_aliases(dll):
+                        return ctypes.cast(entry.modBaseAddr, ctypes.c_void_p).value or 0
+                    if not kernel32.Module32Next(snap, ctypes.byref(entry)):
+                        break
+        finally:
+            kernel32.CloseHandle(snap)
+        return 0
+
+    def _read(self, address: int, size: int) -> bytes:
+        if not address:
+            return bytes(size)
+        buf  = ctypes.create_string_buffer(size)
+        read = ctypes.c_size_t()
+        ok   = kernel32.ReadProcessMemory(
+            self.handle, ctypes.c_void_p(address), buf, size, ctypes.byref(read))
+        if not ok:
+            err = ctypes.get_last_error()
+            # ERROR_INVALID_HANDLE (6) or ERROR_ACCESS_DENIED (5) = process gone
+            if err in (5, 6):
+                raise OSError(err, f"ReadProcessMemory failed: winerror={err} (process died)")
+            # ERROR_PARTIAL_COPY (299) is normal at page boundaries; return zeros.
+        return buf.raw
+
+
+# ── offset loading ────────────────────────────────────────────────────────────
+def _fetch(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=12) as r:
+        return json.loads(r.read())
+
+
+def _parse_fields(raw: dict) -> dict:
+    """Normalize cs2-dumper client_dll.json into {ClassName: {field: offset}}."""
+    # Unwrap {"client.dll": {"classes": {...}}} — actual format from cs2-dumper
+    if len(raw) == 1:
+        inner = next(iter(raw.values()))
+        if isinstance(inner, dict):
+            raw = inner
+
+    # Unwrap {"classes": {...}, "enums": {...}}
+    if "classes" in raw and isinstance(raw["classes"], dict):
+        raw = raw["classes"]
+
+    out = {}
+    for cls, data in raw.items():
+        if not isinstance(data, dict):
+            continue
+        fields = {}
+        inner_fields = data.get("fields", data)  # prefer explicit "fields" key
+
+        for fname, fdata in inner_fields.items():
+            if isinstance(fdata, int):
+                fields[fname] = fdata
+            elif isinstance(fdata, dict):
+                off = fdata.get("offset") or fdata.get("value", 0)
+                if off:
+                    fields[fname] = off
+
+        if fields:
+            out[cls] = fields
+
+    log.debug("_parse_fields: parsed %d classes", len(out))
+    return out
+
+
+def load_offsets() -> dict:
+    dll_path  = _find_client_dll()
+    dll_mtime = dll_path.stat().st_mtime if dll_path else 0
+
+    if CACHE_FILE.exists():
+        try:
+            cached   = json.loads(CACHE_FILE.read_text())
+            cache_ts = cached.get("_ts", 0)
+            # When client.dll is found: cache is valid as long as the dll hasn't changed.
+            # When client.dll can't be found (non-standard install path on Windows):
+            # fall back to a time-based TTL so stale offsets don't live forever.
+            cache_age = time.time() - cache_ts
+            dll_found = dll_mtime > 0
+            cache_ok  = (cache_ts > dll_mtime) if dll_found else (cache_age < CACHE_MAX_AGE)
+            if cache_ok:
+                reason = "client.dll unchanged" if dll_found else f"age {cache_age/3600:.1f}h < {CACHE_MAX_AGE/3600:.0f}h TTL"
+                log.info("using cached offsets (%s)", reason)
+                return cached
+            reason = "client.dll updated" if dll_found else f"cache expired ({cache_age/3600:.1f}h old)"
+            log.info("%s — rescanning...", reason)
+        except Exception:
+            pass
+
+    log.info("fetching offsets from cs2-dumper...")
+    result = None
+    try:
+        raw_off    = _fetch(f"{DUMPER_BASE}/offsets.json")
+        raw_client = _fetch(f"{DUMPER_BASE}/client_dll.json")
+
+        client_globals = (
+            raw_off.get("client.dll") or
+            raw_off.get("offsets", {}).get("client.dll") or {}
+        )
+
+        result = {
+            "_ts":     time.time(),
+            "globals": client_globals,
+            "fields":  _parse_fields(raw_client),
+        }
+        log.info("offsets fetched from cs2-dumper")
+    except Exception as exc:
+        log.warning("fetch failed: %s", exc)
+        if CACHE_FILE.exists():
+            log.info("falling back to cached offsets")
+            result = json.loads(CACHE_FILE.read_text())
+        else:
+            log.critical("no cached offsets and fetch failed — cannot continue")
+            sys.exit(1)
+
+    # Always run local scanner to patch any offsets cs2-dumper may have wrong
+    # for the currently installed client.dll build
+    log.info("running local binary scan to verify/patch offsets...")
+    _scan_globals_from_dll(result)   # saves cache internally
+    return result
+
+def _find_client_dll(pid: int | None = None) -> Path | None:
+    """Locate the client module on disk for cache invalidation/local scans."""
+    return find_client_binary()
+
+
+# How often the main loop re-checks whether CS2's client module changed on disk
+# (i.e. the game was updated) so it can auto-refresh offsets without a restart.
+OFFSET_RECHECK_SEC = 600.0
+
+def _client_dll_mtime(pid: int | None = None) -> float:
+    """On-disk mtime of the client module — the ground-truth signal that the game
+    was updated and offsets may have moved. 0.0 if it can't be located."""
+    p = _find_client_dll(pid)
+    try:
+        return p.stat().st_mtime if p else 0.0
+    except OSError:
+        return 0.0
+
+
+def _scan_globals_from_dll(offsets: dict, pid: int | None = None) -> bool:
+    """
+    Scan client.dll on disk for global offsets using byte signatures.
+    Patches offsets['globals'] in-place and saves the cache.
+    Returns True if at least dwEntityList was found.
+    """
+    dll_path = _find_client_dll(pid)
+    if not dll_path:
+        log.warning("offset scanner: client.dll not found on disk")
+        return False
+
+    log.info("offset scanner: scanning %s ...", dll_path.name)
+    try:
+        data = dll_path.read_bytes()
+    except Exception as exc:
+        log.warning("offset scanner: could not read client.dll: %s", exc)
+        return False
+    if data[:2] != b"MZ":
+        log.warning("offset scanner: %s is not a PE image", dll_path.name)
+        return False
+
+    # Parse PE section table to build raw-offset -> RVA mapping
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    ns = struct.unpack_from("<H", data, pe + 6)[0]
+    os_ = struct.unpack_from("<H", data, pe + 20)[0]
+    so = pe + 24 + os_
+    sections = []
+    for i in range(ns):
+        s = so + i * 40
+        va  = struct.unpack_from("<I", data, s + 12)[0]
+        rs  = struct.unpack_from("<I", data, s + 16)[0]
+        ro  = struct.unpack_from("<I", data, s + 20)[0]
+        vs  = struct.unpack_from("<I", data, s + 8)[0]
+        sections.append((va, ro, min(vs, rs)))
+
+    def raw_to_rva(raw: int) -> int | None:
+        for va, ro, sz in sections:
+            if ro <= raw < ro + sz:
+                return va + (raw - ro)
+        return None
+
+    # sig: (3-byte opcode, context bytes at +7)
+    SIGS = {
+        "dwEntityList":            (b"\x48\x89\x0D", b"\xe9"),
+        "dwGlobalVars":            (b"\x48\x89\x15", b"\x48\x89\x42"),
+        "dwLocalPlayerController": (b"\x48\x8B\x05", b"\x41\x89\xBE"),
+        "dwViewMatrix":            (b"\x48\x8D\x0D", b"\x48\xC1\xE0\x06"),
+    }
+
+    found_any = False
+    for name, (sig, ctx) in SIGS.items():
+        pos = 0
+        while True:
+            idx = data.find(sig, pos)
+            if idx == -1:
+                break
+            rva_end = raw_to_rva(idx + 7)
+            if rva_end is not None and data[idx + 7: idx + 7 + len(ctx)] == ctx:
+                rel32 = struct.unpack_from("<i", data, idx + 3)[0]
+                target_rva = (rva_end + rel32) & 0xFFFFFFFF
+                offsets["globals"][name] = target_rva
+                log.info("offset scanner: %s = 0x%X", name, target_rva)
+                found_any = True
+                break
+            pos = idx + 1
+
+    # Also scan for field offsets stored in schema metadata (name string → nearby offset)
+    FIELD_NAMES = {
+        ("C_CSPlayerPawn",  "m_angEyeAngles"): 0x10,   # offset is +16 bytes after name ptr in schema entry
+    }
+    image_base_va = struct.unpack_from("<Q", data, pe + 24 + 24)[0]
+    for (cls, field), schema_off in FIELD_NAMES.items():
+        needle = field.encode() + b"\x00"
+        str_raw = data.find(needle)
+        if str_raw == -1:
+            continue
+        # Find section containing the string to get its VA
+        for va, ro, sz in sections:
+            if ro <= str_raw < ro + sz:
+                str_va = image_base_va + va + (str_raw - ro)
+                break
+        else:
+            continue
+        # Search for pointer to this string
+        str_va_bytes = struct.pack("<Q", str_va)
+        ref = data.find(str_va_bytes)
+        if ref == -1:
+            continue
+        # Read field offset at schema_off bytes after the name pointer
+        field_off_raw = struct.unpack_from("<I", data, ref + schema_off)[0]
+        if 0x100 < field_off_raw < 0x10000:
+            offsets["fields"].setdefault(cls, {})[field] = field_off_raw
+            log.info("offset scanner: %s.%s = 0x%X", cls, field, field_off_raw)
+            found_any = True
+
+    if found_any:
+        offsets["_ts"] = time.time()
+        try:
+            CACHE_FILE.write_text(json.dumps(offsets, indent=2))
+        except Exception:
+            pass
+
+    return found_any
+
+
+# ── cs2 entity reading ────────────────────────────────────────────────────────
+ENT_ENTRY_MASK   = 0x7FFF
+INVALID_EHANDLE  = 0xFFFFFFFF
+
+# weapon type ids from CCSWeaponBaseVData::m_WeaponType
+_PRIMARY_TYPES   = {2, 3, 4, 5, 6}   # smg, rifle, shotgun, sniper, mg
+_PISTOL_TYPE     = 1
+_MELEE_TYPES     = {0, 8}             # knife, taser
+_GRENADE_TYPE    = 9
+
+_GRENADE_CLASS_TO_TYPE = {
+    # Projectile classes (entities that fly through the air)
+    "C_SmokeGrenadeProjectile": "smoke",
+    "C_MolotovProjectile":      "molly",   # in-flight trajectory
+    "C_HEGrenadeProjectile":    "he",
+    "C_FlashbangProjectile":    "flash",   # C_Flashbang is inventory item — use projectile
+    "C_DecoyProjectile":        "decoy",
+    # Post-land effects
+    "C_Inferno":                "molly",   # fire zone after landing
+}
+_GRENADE_CLASSES = set(_GRENADE_CLASS_TO_TYPE)
+
+
+def _cls_eq(cls: str, *names: str) -> bool:
+    """Compare a runtime class name against one or more expected names,
+    ignoring the ``C_`` prefix.
+
+    cs2-dumper spells client classes with the prefix (``C_CSPlayerPawn``) but
+    the names read out of the live Linux binary have none (``CCSPlayerPawn``).
+    Comparing the two spellings directly silently fails every match.
+    """
+    if not cls:
+        return False
+    c = cls[2:] if cls.startswith("C_") else cls[1:] if cls.startswith("C") else cls
+    for n in names:
+        m = n[2:] if n.startswith("C_") else n[1:] if n.startswith("C") else n
+        if c == m:
+            return True
+    return False
+
+
+_SPECIAL_CLASSES = ("C_C4", "C_PlantedC4", *_GRENADE_CLASSES)
+_canon_cache: dict[str, str] = {}
+
+
+def _canon_special(cls: str) -> str:
+    """Map a runtime class name onto its a2x spelling if it is a bomb or
+    grenade class (``CC4`` -> ``C_C4``), else return "". Exact comparisons
+    against ``"C_C4"`` never match on Linux, where names lack the prefix."""
+    r = _canon_cache.get(cls)
+    if r is None:
+        r = next((n for n in _SPECIAL_CLASSES if _cls_eq(cls, n)), "")
+        _canon_cache[cls] = r
+    return r
+
+# Designer names (Hammer/entity-factory names) → C++ class names used in comparisons.
+# Used as fallback when the classinfo chain is unavailable (e.g. Windows CS2 post-update).
+_DESIGNER_TO_CLASS: dict[str, str] = {
+    "cs_player_controller":    "CCSPlayerController",
+    "weapon_c4":               "C_C4",
+    "planted_c4":              "C_PlantedC4",
+    "smokegrenade_projectile": "C_SmokeGrenadeProjectile",
+    "hegrenade_projectile":    "C_HEGrenadeProjectile",
+    "flashbang_projectile":    "C_FlashbangProjectile",
+    "molotov_projectile":      "C_MolotovProjectile",
+    "incgrenade_projectile":   "C_MolotovProjectile",
+    "decoy_projectile":        "C_DecoyProjectile",
+    "inferno":                 "C_Inferno",
+    "world":                   "CWorld",
+    "worldent":                "CWorld",   # alternate world-entity designer name
+    "cs_worldentity":          "CWorld",
+}
+
+def _looks_like_designer(s: str) -> bool:
+    """Return True if s looks like a valid CS2 designer/entity name."""
+    return bool(s) and 3 <= len(s) <= 64 and s[0].islower() and s.replace("_", "").isalnum()
+
+# hardcoded offsets that never come from schema
+_CURTIME_OFF          = 0x30    # CGlobalVarsBase::m_curtime
+_MAP_NAME_OFF         = 0x188   # CGlobalVarsBase::map name string
+_IDENTITY_CLASS_OFF   = 0x08    # CEntityIdentity::m_pClassInfo
+_IDENTITY_IDX_OFF     = 0x10    # CEntityIdentity::m_Idx
+_CLASSINFO_NAME1_OFF  = 0xE0    # class_info -> intermediate ptr (updated for CS2 build 14153+)
+_CLASSINFO_NAME2_OFF  = 0x08    # intermediate -> name string ptr
+_SMOKE_DID_EFFECT_OFF = 0x11B8  # fallback: C_SmokeGrenadeProjectile::m_bDidSmokeEffect (may be stale)
+
+def _valid_ptr(p: int) -> bool:
+    """True for a plausible x86-64 userspace pointer.
+
+    Covers the whole 47-bit canonical range (0x1_0000 .. 0x8000_0000_0000). The
+    old code hard-coded a 0x7F00_0000_0000 lower bound, which silently rejected
+    every real pointer on machines where ASLR maps CS2's libraries lower (e.g.
+    0x7388_xxxx_xxxx) — breaking interface resolution and every entity read.
+    """
+    return 0x10000 <= p < 0x800000000000
+
+
+class CS2Reader:
+    def __init__(self, mem: Memory, offsets: dict, steam_id=0):
+        self.mem      = mem
+        self._offsets = offsets          # full dict; needed for correct cache writes
+        self._g       = offsets.setdefault("globals", {})
+        self._f       = offsets.get("fields", {})
+        # SteamID64(s) of the local player (config.json / loginusers.vdf). When set,
+        # local-player identification matches m_steamID instead of trusting
+        # m_bIsLocalPlayerController, which can false-positive after a CS2 update.
+        # Accepts a frozenset (multi-account), int, or 0.
+        if isinstance(steam_id, frozenset):
+            self.steam_ids = steam_id
+        elif steam_id:
+            self.steam_ids = frozenset([int(steam_id)])
+        else:
+            self.steam_ids = frozenset()
+        self.steam_id = next(iter(self.steam_ids), 0)  # primary (for logging)
+
+        self.client_base        = 0
+        self.entity_system      = 0
+        self.gvars              = 0
+        self.lpc_addr           = 0   # address of local player controller pointer
+        self._bomb_own_idx      = 0   # persisted across frames
+        self._hi_ptrs           = {}  # chunk -> [512 entity ptrs] from last hi-slot sweep
+        self._hi_targets        = {}  # idx -> (entity_ptr, class_name) for slots >= 1024
+        self._hi_tick           = 0   # hi-slot sweep runs every 3rd frame
+        self._last_hi_log       = 0.0 # monotonic time of last hi-slot census log
+        self._last_local_team   = 0   # last known valid team (2=T, 3=CT)
+        self._lpc_fallback      = 0   # cached lpc when dwLocalPlayerController offset is wrong
+        self._lpc_via_steam     = False  # True when _lpc_fallback was matched by steam_id (vs. flag)
+        self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
+        self._entity_chunk_off = 16   # always 0x10 on Windows
+        self._entity_stride    = 120  # MSVC CEntityIdentity is always 120 bytes
+        # Class-name chain offsets — auto-detected at startup via _detect_classinfo_offsets
+        self._classinfo_id_off    = _IDENTITY_CLASS_OFF    # CEntityIdentity → CSchemaClassInfo*
+        self._classinfo_name1_off = _CLASSINFO_NAME1_OFF   # CSchemaClassInfo → intermediate ptr
+        self._classinfo_name2_off = _CLASSINFO_NAME2_OFF   # intermediate → name std::string*
+        self._classnames_available   = False  # set True when classinfo offsets are confirmed working
+        self._classinfo_charptr_mode = False  # True when name is char* at unk1+off2 (not ptr-to-string)
+        self._use_designer_name      = False  # True when classinfo chain failed; use m_designerName instead
+        self._last_classinfo_retry   = 0.0   # monotonic time of last _detect_classinfo_offsets() retry
+
+    def _read_utl_string(self, address: int) -> str:
+        """Read a CS2 CUtlString — tries ptr at +0 then ptr at +8."""
+        for delta in (0, 8):
+            ptr = self.mem.ptr(address + delta)
+            if ptr:
+                s = self.mem.cstring(ptr)
+                if s:
+                    return s
+        return ""
+
+    def _off(self, cls: str, field: str, default: int = 0) -> int:
+        return self._f.get(cls, {}).get(field, default)
+
+    # ── setup ─────────────────────────────────────────────────────────────────
+    def setup(self) -> bool:
+        self.client_base = self.mem.get_module_base("client.dll")
+        if not self.client_base:
+            log.error("CS2 client module not loaded (%s) — is CS2 running?",
+                      ", ".join(client_module_aliases("client.dll")))
+            return False
+
+        dw_list  = self._g.get("dwEntityList", 0)
+        dw_gvars = self._g.get("dwGlobalVars",  0)
+        dw_lpc   = self._g.get("dwLocalPlayerController", 0)
+
+        if not dw_list or not dw_gvars or not dw_lpc:
+            log.error("critical global offsets missing from cs2-dumper cache — delete offsets_cache.json and retry")
+            return False
+
+        log.debug("dwEntityList=0x%X  dwGlobalVars=0x%X  dwLocalPlayerController=0x%X",
+                  dw_list, dw_gvars, dw_lpc)
+
+        raw_list = self.mem._read(self.client_base + dw_list, 8)
+        self.entity_system = self.mem.ptr(self.client_base + dw_list)
+        self.gvars         = self.mem.ptr(self.client_base + dw_gvars)
+        self.lpc_addr      = self.client_base + dw_lpc
+
+        dw_vm = self._g.get("dwViewMatrix", 0)
+        self.view_matrix_addr = (self.client_base + dw_vm) if dw_vm else 0
+
+        if not self.entity_system:
+            log.warning("entity system ptr is null (raw bytes @ dwEntityList: %s) — CS2 may be in main menu or offsets are stale",
+                        raw_list.hex())
+            return False
+
+        log.info("client.dll    @ 0x%016X", self.client_base)
+        log.info("entity system @ 0x%016X", self.entity_system)
+        log.info("global vars   @ 0x%016X", self.gvars)
+
+        # Auto-detect class-name chain offsets; if they changed (CS2 update) this
+        # fixes class-name resolution on both platforms without a code update.
+        if self.entity_system:
+            self._detect_classinfo_offsets()
+
+        return True
+
+    # ── entity list ───────────────────────────────────────────────────────────
+    def _entity_ptr(self, idx: int, chunk_cache: dict) -> int:
+        chunk = idx >> 9
+        if chunk not in chunk_cache:
+            chunk_cache[chunk] = self.mem.ptr(
+                self.entity_system + 8 * chunk + self._entity_chunk_off)
+        entry_list = chunk_cache[chunk]
+        if not entry_list:
+            return 0
+        return self.mem.ptr(entry_list + self._entity_stride * (idx & 0x1FF))
+
+
+    def _entity_by_handle(self, handle: int, chunk_cache: dict) -> int:
+        # A zero handle is unset, not "entity 0". Without this it resolves to
+        # entity index 0 — CWorld — which is a valid pointer, so callers that
+        # only check `if not ent` accept the world entity as a real result.
+        if handle == INVALID_EHANDLE or handle == 0:
+            return 0
+        idx = handle & ENT_ENTRY_MASK
+        if idx == 0:
+            return 0
+        return self._entity_ptr(idx, chunk_cache)
+
+    def _class_name(self, entity_ptr: int) -> str:
+        """Resolve the schema class name for an entity."""
+        off_pent = self._off("CEntityInstance", "m_pEntity", 0x10)
+        identity = self.mem.ptr(entity_ptr + off_pent)
+        if not identity:
+            return ""
+        # Check validity via m_Idx
+        m_idx = self.mem.u32(identity + _IDENTITY_IDX_OFF)
+        if (m_idx & ENT_ENTRY_MASK) == ENT_ENTRY_MASK:
+            return ""
+        # Designer-name mode: classinfo chain unavailable; read m_designerName directly.
+        # m_designerName is a const char* — must dereference the pointer before cstring().
+        if self._use_designer_name:
+            off_designer = self._off("CEntityIdentity", "m_designerName", 32)
+            name_ptr = self.mem.ptr(identity + off_designer) if off_designer else 0
+            designer = self.mem.cstring(name_ptr) if name_ptr else ""
+            return _DESIGNER_TO_CLASS.get(designer, designer) if designer else ""
+        class_info = self.mem.ptr(identity + self._classinfo_id_off)
+        if not class_info:
+            return ""
+        unk1 = self.mem.ptr(class_info + self._classinfo_name1_off)
+        if not unk1:
+            return ""
+        if self._classinfo_charptr_mode:
+            # name is a const char* stored inline at unk1 + name2_off (no extra dereference)
+            return self.mem.cstring(unk1 + self._classinfo_name2_off) or ""
+        unk2 = self.mem.ptr(unk1 + self._classinfo_name2_off)
+        if not unk2:
+            return ""
+        # unk2 is a std::string object (or char*) in game memory.
+        # MSVC std::string: size at +0x10, data at ptr(+0x00) if len>=16, else inline.
+        sz = self.mem.u32(unk2 + 0x10)
+        if sz == 0 or sz > 256:
+            return ""
+        if sz < 16:
+            return self.mem.cstring(unk2)
+        heap = self.mem.ptr(unk2)
+        return self.mem.cstring(heap) if heap else ""
+
+    # ── high-slot entity discovery ────────────────────────────────────────────
+    _HI_CHUNKS = 16   # sweep entity slots 1024..8191 (chunks 2..15)
+
+    _hi_sweep_diag_done = False   # one-time diagnostic flag
+
+    def _hi_sweep(self):
+        """Discover bomb / planted-C4 / grenade entities at slots >= 1024.
+
+        The per-frame walk only covers slots 0..1023, but servers allocate
+        dynamic entities (weapons, projectiles, planted C4) above that range.
+        One bulk read per chunk; class names are resolved only for slots whose
+        entity pointer changed since the previous sweep, so steady-state cost
+        is a handful of reads. Results land in self._hi_targets.
+        """
+        if not self.entity_system:
+            return
+        # One-time diagnostic: dump the raw chunk pointer array so we can see
+        # which chunks have live data and confirm the entry stride.
+        if not self._hi_sweep_diag_done:
+            self._hi_sweep_diag_done = True
+            rows = []
+            for c in range(0, 20):
+                addr = self.entity_system + 8 * c + self._entity_chunk_off
+                raw8 = self.mem.u64(addr)
+                rows.append(f"  [{c:2d}] @0x{addr:X} = 0x{raw8:X} {'✓' if _valid_ptr(raw8) else '✗'}")
+            log.info("hi-sweep chunk-ptr diagnostic (es=0x%X chunk_off=%d):\n%s",
+                     self.entity_system, self._entity_chunk_off, "\n".join(rows))
+        st = self._entity_stride
+        for chunk in range(2, self._HI_CHUNKS):
+            base = self.mem.ptr(self.entity_system + 8 * chunk + self._entity_chunk_off)
+            if not base or not _valid_ptr(base):
+                if self._hi_ptrs.pop(chunk, None) is not None:
+                    for idx in [i for i in self._hi_targets if (i >> 9) == chunk]:
+                        del self._hi_targets[idx]
+                continue
+            raw = self.mem._read(base, st * 512)
+            if not raw or len(raw) != st * 512:
+                continue
+            ptrs = [struct.unpack_from("<Q", raw, s * st)[0] for s in range(512)]
+            prev = self._hi_ptrs.get(chunk)
+            if prev == ptrs:
+                continue
+            for slot in range(512):
+                p = ptrs[slot]
+                if prev is not None and prev[slot] == p:
+                    continue
+                idx = (chunk << 9) | slot
+                if p and _valid_ptr(p):
+                    cls = _canon_special(self._class_name(p))
+                    if cls:
+                        self._hi_targets[idx] = (p, cls)
+                        continue
+                self._hi_targets.pop(idx, None)
+            self._hi_ptrs[chunk] = ptrs
+
+        now = time.monotonic()
+        if now - self._last_hi_log > 30.0:
+            self._last_hi_log = now
+            log.info("hi-slot scan: %d bomb/grenade entities above idx 1023: %s",
+                     len(self._hi_targets),
+                     ", ".join(f"{c}@{i}" for i, (_, c) in sorted(self._hi_targets.items())) or "none")
+
+    def _detect_classinfo_offsets(self) -> bool:
+        """Auto-detect class-name chain offsets by finding 'CWorld' on the world entity.
+
+        Scans identity offsets for class_info, then scans class_info for the two-level
+        pointer chain that ends in a std::string containing the class name.
+        Updates self._classinfo_id_off / _name1_off / _name2_off on success.
+        """
+        cache: dict[int, int] = {}
+        ent = self._entity_ptr(0, cache)   # slot 0 = world entity, always present
+        if not ent:
+            return False
+        off_pent = self._off("CEntityInstance", "m_pEntity", 0x10)
+        identity = self.mem.ptr(ent + off_pent)
+        if not identity:
+            return False
+
+        def _try_string(addr: int) -> str:
+            if not addr:
+                return ""
+            # MSVC std::string: size at +0x10, data inline (<16) or at ptr(+0x00)
+            msvc_sz = self.mem.u32(addr + 0x10)
+            if 0 < msvc_sz <= 64:
+                if msvc_sz < 16:
+                    return self.mem.cstring(addr) or ""
+                heap = self.mem.ptr(addr)
+                return (self.mem.cstring(heap) or "") if heap else ""
+            return ""
+
+        def _looks_like_class(s: str) -> bool:
+            return bool(s) and 3 <= len(s) <= 48 and s[0] == 'C' and s.replace('_', '').isalnum()
+
+        # Scan identity for class_info pointer (expected at 0x08, but try nearby)
+        for id_off in range(0x00, 0x40, 8):
+            class_info = self.mem.ptr(identity + id_off)
+            if not class_info:
+                continue
+            # 2-level indirection: class_info → unk1 → unk2 (std::string)
+            for off1 in range(0x00, 0x200, 8):
+                unk1 = self.mem.ptr(class_info + off1)
+                if not unk1:
+                    continue
+                for off2 in range(0x00, 0x40, 8):
+                    # Case A: pointer-to-string at unk1+off2 (ptr to MSVC std::string or char*)
+                    unk2 = self.mem.ptr(unk1 + off2)
+                    if unk2:
+                        s = _try_string(unk2)
+                        if not s:
+                            s = self.mem.cstring(unk2) or ""   # treat unk2 as char* directly
+                        if s == "CWorld":
+                            self._classinfo_id_off    = id_off
+                            self._classinfo_name1_off = off1
+                            self._classinfo_name2_off = off2
+                            self._classnames_available   = True
+                            self._classinfo_charptr_mode = False
+                            log.info("classinfo offsets auto-detected: id=0x%02X name1=0x%X name2=0x%02X → %r",
+                                     id_off, off1, off2, s)
+                            return True
+                    # Case B: name IS the cstring inline at unk1+off2 (const char* field)
+                    s2 = self.mem.cstring(unk1 + off2) or ""
+                    if s2 == "CWorld":
+                        self._classinfo_id_off    = id_off
+                        self._classinfo_name1_off = off1
+                        self._classinfo_name2_off = off2
+                        self._classnames_available   = True
+                        self._classinfo_charptr_mode = True   # name is char* inline, no extra deref
+                        log.info("classinfo offsets auto-detected (char* mode): id=0x%02X name1=0x%X name2=0x%02X → %r",
+                                 id_off, off1, off2, s2)
+                        return True
+                    # Keep going — don't stop on a plausible-but-wrong hit
+
+        # Classinfo chain scan failed. Try m_designerName (CEntityIdentity+0x20) as a fallback.
+        # m_designerName is a const char* — identity+off holds a POINTER to the string, so we
+        # must dereference it before calling cstring().
+        off_designer = self._off("CEntityIdentity", "m_designerName", 32)
+        if identity and off_designer:
+            try:
+                name_ptr = self.mem.ptr(identity + off_designer)
+                designer = self.mem.cstring(name_ptr) if name_ptr else ""
+                if _looks_like_designer(designer):
+                    self._use_designer_name    = True
+                    self._classnames_available = True
+                    log.info("classinfo: chain scan failed — using m_designerName fallback "
+                             "(world entity designer=%r)", designer)
+                    return True
+            except Exception:
+                pass
+
+        log.warning("classinfo offset scan: could not find 'CWorld' — class names unavailable; "
+                    "old offsets id=0x%02X name1=0x%X name2=0x%02X",
+                    self._classinfo_id_off, self._classinfo_name1_off, self._classinfo_name2_off)
+        return False
+
+    def _team_diag(self, lpc: int, off_team: int) -> None:
+        """One-shot dump when the local team can't be read.
+
+        m_iTeamNum is a uint8 at an odd offset (999 on the current build),
+        so this scans BYTE-wise — a dword scan on 4-aligned offsets never even
+        looks at either candidate.
+        """
+        if getattr(self, "_team_diag_done", False):
+            return
+        self._team_diag_done = True
+        try:
+            cls = self._class_name(lpc)
+            blob = self.mem._read(lpc, 4096)
+            cands = [o for o, b in enumerate(blob) if b in (2, 3)]
+            # Which candidate offsets look like a team byte followed by padding?
+            clean = [o for o in cands if blob[o + 1:o + 4] == b"\x00\x00\x00"]
+            log.warning(
+                "TEAM-DIAG lpc=0x%X cls=%r off_team=%d byte@off_team=%s | "
+                "byte@999=%s byte@1367=%s | %d byte offsets hold 2/3; "
+                "with 3 zero bytes after: %s",
+                lpc, cls, off_team,
+                blob[off_team] if off_team < len(blob) else "oob",
+                blob[999] if len(blob) > 999 else "oob",
+                blob[1367] if len(blob) > 1367 else "oob",
+                len(cands), clean[:40])
+            # How many player controllers exist, and what team byte does each
+            # carry? Distinguishes "not in a match" from "in a match but reading
+            # the wrong offset".
+            cache: dict = {}
+            rows = []
+            for idx in range(1, 128):
+                e = self._entity_ptr(idx, cache)
+                if not e or self._class_name(e) != "CCSPlayerController":
+                    continue
+                b = self.mem._read(e, 1400)
+                rows.append(f"idx={idx} @{off_team}={b[off_team] if off_team < len(b) else '?'} "
+                            f"@999={b[999] if len(b) > 999 else '?'} "
+                            f"@1367={b[1367] if len(b) > 1367 else '?'}")
+            log.warning("TEAM-DIAG %d player controllers (a live match has one per "
+                        "player; 0-1 means menu/lobby): %s",
+                        len(rows), " | ".join(rows) if rows else "none")
+        except Exception as exc:
+            log.warning("TEAM-DIAG failed: %s", exc)
+
+    # ── scene origin ──────────────────────────────────────────────────────────
+    def _origin(self, entity_ptr: int) -> tuple[float, float, float]:
+        off_node   = self._off("C_BaseEntity", "m_pGameSceneNode")
+        off_origin = self._off("CGameSceneNode", "m_vecAbsOrigin")
+        if not off_node or not off_origin:
+            return 0.0, 0.0, 0.0
+        node = self.mem.ptr(entity_ptr + off_node)
+        if not node:
+            return 0.0, 0.0, 0.0
+
+        base = node + off_origin
+        return self.mem.f32(base), self.mem.f32(base + 4), self.mem.f32(base + 8)
+
+    # ── weapons ───────────────────────────────────────────────────────────────
+    def _read_weapons(self, pawn_ptr: int, chunk_cache: dict) -> dict:
+        weapons = {"m_primary": "", "m_secondary": "", "m_active": "",
+                   "m_melee": [], "m_utilities": []}
+
+        off_wsvc    = self._off("C_BasePlayerPawn",    "m_pWeaponServices")
+        off_my_wpns = self._off("CPlayer_WeaponServices", "m_hMyWeapons")
+        off_active  = self._off("CPlayer_WeaponServices", "m_hActiveWeapon")
+        off_subid   = self._off("C_BaseEntity",           "m_nSubclassID")
+        off_wtype   = self._off("CCSWeaponBaseVData",     "m_WeaponType")
+        off_wname   = self._off("CCSWeaponBaseVData",     "m_szName")
+
+        if not all([off_wsvc, off_my_wpns, off_subid, off_wtype, off_wname]):
+            return weapons
+
+        wsvc = self.mem.ptr(pawn_ptr + off_wsvc)
+        if not wsvc:
+            return weapons
+
+        # CNetworkUtlVectorBase: m_size (u32 @ +0x00), m_elements (ptr @ +0x08)
+        vec      = wsvc + off_my_wpns
+        w_size   = self.mem.u32(vec)
+        w_elems  = self.mem.ptr(vec + 0x08)
+
+        if w_elems and 0 < w_size < 64:
+            for i in range(w_size):
+                w_handle = self.mem.i32(w_elems + i * 4)
+                if w_handle == -1:
+                    continue
+                w_ptr = self._entity_by_handle(w_handle & ENT_ENTRY_MASK, chunk_cache)
+                if not w_ptr:
+                    continue
+                wdata = self.mem.ptr(w_ptr + off_subid + 0x08)
+                if not wdata:
+                    continue
+                w_type = self.mem.u32(wdata + off_wtype)
+                wname  = self.mem.string_field(wdata + off_wname)
+                if not wname:
+                    continue
+                if wname.startswith("weapon_"):
+                    wname = wname[7:]
+                if w_type in _PRIMARY_TYPES:
+                    weapons["m_primary"] = wname
+                elif w_type == _PISTOL_TYPE:
+                    weapons["m_secondary"] = wname
+                elif w_type in _MELEE_TYPES and wname not in weapons["m_melee"]:
+                    weapons["m_melee"].append(wname)
+                elif w_type == _GRENADE_TYPE and wname not in weapons["m_utilities"]:
+                    weapons["m_utilities"].append(wname)
+
+        # Active weapon
+        if off_active:
+            ah = self.mem.u32(wsvc + off_active)
+            if ah != INVALID_EHANDLE:
+                aw_ptr = self._entity_by_handle(ah, chunk_cache)
+                if aw_ptr:
+                    wdata = self.mem.ptr(aw_ptr + off_subid + 0x08)
+                    if wdata:
+                        aname = self.mem.string_field(wdata + off_wname)
+                        if aname.startswith("weapon_"):
+                            aname = aname[7:]
+                        weapons["m_active"] = aname
+
+        return weapons
+
+    # ── local player controller fallback (wrong dwLocalPlayerController RVA) ──
+    def _find_lpc_fallback(self) -> int:
+        """
+        Scan the entity list for the local player's controller.  Used when
+        dwLocalPlayerController is stale after a CS2 update.
+
+        Preferred key: m_steamID == self.steam_id (from config.json, auto-
+        detected from loginusers.vdf).  m_bIsLocalPlayerController is only
+        trusted when no steam_id is known — after an update it can read true
+        on another player's controller, which flips the radar team colors.
+
+        Caches the result; when a steam_id is known the cache is re-validated
+        each call so entity-slot reuse after a map change triggers a rescan.
+        Throttled to one scan per 2 seconds.
+        """
+        off_steam = self._off("CBasePlayerController", "m_steamID")
+        if self._lpc_fallback:
+            if self._lpc_via_steam and (self.steam_ids and off_steam):
+                # Validate steam_id only when lpc was originally found that way.
+                try:
+                    if self.mem.u64(self._lpc_fallback + off_steam) in self.steam_ids:
+                        return self._lpc_fallback
+                except Exception:
+                    pass
+                self._lpc_fallback = 0   # stale — entity recycled on map change
+            else:
+                # Found via m_bIsLocalPlayerController flag — no steam_id re-check.
+                return self._lpc_fallback
+
+        now = time.monotonic()
+        if now - self._last_lpc_scan < 2.0:
+            return 0
+        self._last_lpc_scan = now
+
+        off_is_local = self._off("CBasePlayerController", "m_bIsLocalPlayerController")
+        off_hctrl    = self._off("C_BasePlayerPawn", "m_hController")
+        if not self.entity_system or not (off_is_local or (self.steam_ids and off_steam)):
+            log.warning("lpc fallback: skipping scan — entity_system=0x%X off_is_local=%d steam_ids=%s off_steam=%d",
+                        self.entity_system, off_is_local, sorted(self.steam_ids), off_steam)
+            return 0
+
+        cache: dict[int, int] = {}
+        found_any = 0
+        flag_hit  = 0
+        # Diagnostic counters (logged at WARNING to be always visible)
+        _diag_ents = 0
+        _diag_names: dict[str, int] = {}
+        for idx in range(1024):
+            ent = self._entity_ptr(idx, cache)
+            if not ent:
+                continue
+            _diag_ents += 1
+            cls = self._class_name(ent)
+            _diag_names[cls or "<empty>"] = _diag_names.get(cls or "<empty>", 0) + 1
+
+            # Direct controller.
+            if _cls_eq(cls, "CCSPlayerController"):
+                controller = ent
+            # Pawn: walk back to its controller via m_hController.
+            elif _cls_eq(cls, "C_CSPlayerPawn", "C_CSObserverPawn") and off_hctrl:
+                h = self.mem.u32(ent + off_hctrl)
+                controller = self._entity_by_handle(h, cache) if h != INVALID_EHANDLE else 0
+                if not controller:
+                    continue
+            else:
+                continue
+
+            found_any += 1
+            if self.steam_ids and off_steam:
+                try:
+                    if self.mem.u64(controller + off_steam) in self.steam_ids:
+                        log.info("lpc fallback: local controller matched by steam_id via idx=%d (%s) ctrl=0x%X",
+                                 idx, cls, controller)
+                        self._lpc_fallback = controller
+                        self._lpc_via_steam = True
+                        return controller
+                except Exception:
+                    pass
+            if not flag_hit and off_is_local:
+                try:
+                    if self.mem.bool8(controller + off_is_local):
+                        flag_hit = controller
+                except Exception:
+                    pass
+
+        if flag_hit:
+            if self.steam_ids:
+                log.warning("lpc fallback: steam_ids %s not found among %d controllers — "
+                            "using m_bIsLocalPlayerController instead (verify steam_id in config.json)",
+                            sorted(self.steam_ids), found_any)
+            else:
+                log.info("lpc fallback: local controller found via flag ctrl=0x%X", flag_hit)
+            self._lpc_fallback = flag_hit
+            self._lpc_via_steam = False
+            return flag_hit
+
+        # Always log entity scan summary at WARNING level so it shows up without --debug
+        top_classes = sorted(_diag_names.items(), key=lambda x: -x[1])[:6]
+        log.warning("lpc fallback: %d entity ptrs, %d controllers; class distribution: %s",
+                    _diag_ents, found_any,
+                    " | ".join(f"{n}={c}" for n, c in top_classes) if top_classes else "none")
+
+        # Last resort: avitran-style direct controller slot scan (slots 1-64 = controller slots).
+        # Bypasses class-name lookup entirely. Formula mirrors get_client_entity() in cs2-radar.
+        if self.entity_system and (self.steam_ids and off_steam or off_is_local):
+            try:
+                chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
+                if _valid_ptr(chunk0):
+                    flag_hit2 = 0
+                    for slot in range(1, 65):
+                        ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
+                        if not ctrl:
+                            continue
+                        if self.steam_ids and off_steam:
+                            try:
+                                if self.mem.u64(ctrl + off_steam) in self.steam_ids:
+                                    log.info("lpc direct-slot (win): local controller by steam_id slot=%d ctrl=0x%X",
+                                             slot, ctrl)
+                                    self._lpc_fallback = ctrl
+                                    self._lpc_via_steam = True
+                                    return ctrl
+                            except Exception:
+                                pass
+                        if not flag_hit2 and off_is_local:
+                            try:
+                                if self.mem.bool8(ctrl + off_is_local):
+                                    flag_hit2 = ctrl
+                            except Exception:
+                                pass
+                    if flag_hit2:
+                        log.info("lpc direct-slot (win): local controller via flag ctrl=0x%X", flag_hit2)
+                        self._lpc_fallback = flag_hit2
+                        self._lpc_via_steam = False
+                        return flag_hit2
+            except Exception as e:
+                log.debug("lpc direct-slot scan (win) failed: %s", e)
+
+        return 0
+
+    # ── main collect loop ─────────────────────────────────────────────────────
+    def collect(self) -> dict | None:
+        # Re-read entity_system every frame — CS2 can update this pointer
+        # during map loads or round resets.  Caching it in setup() causes all
+        # entity reads to silently return 0 if the pointer moves.
+        dw_list = self._g.get("dwEntityList", 0)
+        if dw_list:
+            es = self.mem.u64(self.client_base + dw_list)
+            if _valid_ptr(es):
+                self.entity_system = es
+        if not self.entity_system:
+            return None
+
+        # Retry classinfo detection every 30 s when it failed at startup (game may not
+        # have been fully loaded then, or designer-name mode not yet confirmed).
+        if not self._classnames_available:
+            now = time.monotonic()
+            if now - self._last_classinfo_retry >= 30.0:
+                self._last_classinfo_retry = now
+                self._detect_classinfo_offsets()
+
+        # Refresh global vars pointer for the same reason
+        dw_gvars = self._g.get("dwGlobalVars", 0)
+        if dw_gvars:
+            gv = self.mem.ptr(self.client_base + dw_gvars)
+            if gv:
+                self.gvars = gv
+
+        lpc = self.mem.ptr(self.lpc_addr)
+        if lpc and self.steam_ids:
+            # A stale dwLocalPlayerController RVA can still dereference to a
+            # plausible pointer — accept it only if it is really OUR controller.
+            off_steam_chk = self._off("CBasePlayerController", "m_steamID")
+            try:
+                if off_steam_chk and self.mem.u64(lpc + off_steam_chk) not in self.steam_ids:
+                    lpc = 0
+            except Exception:
+                lpc = 0
+        if not lpc:
+            lpc = self._find_lpc_fallback()
+            if not lpc:
+                return None
+
+        off_team = self._off("C_BaseEntity", "m_iTeamNum")
+        # m_iTeamNum is a uint8 — mask the neighbouring bytes out of the 32-bit read.
+        local_team = (self.mem.u32(lpc + off_team) & 0xFF) if off_team else 0
+
+        # Keep broadcasting with the last known team during brief transitions
+        # (half-time swap, round restart) so the webapp doesn't freeze.
+        if local_team in (2, 3):
+            self._last_local_team = local_team
+        elif hasattr(self, "_last_local_team") and self._last_local_team:
+            local_team = self._last_local_team
+        else:
+            self._team_diag(lpc, off_team)
+            return None
+
+        map_name = self._get_map_name()
+
+        off_health   = self._off("C_BaseEntity",         "m_iHealth")
+        off_team_    = self._off("C_BaseEntity",         "m_iTeamNum")
+        off_owner    = self._off("C_BaseEntity",         "m_hOwnerEntity")
+        # CCSPlayerController.m_hPlayerPawn is the CHandle that actually points at
+        # the player's pawn. CBasePlayerController.m_hPawn reads 0 on this build,
+        # and handle 0 resolves to entity index 0 (CWorld) rather than failing —
+        # so the old code silently used the world entity as every player's pawn.
+        off_hpawn    = (self._off("CCSPlayerController", "m_hPlayerPawn")
+                        or self._off("CBasePlayerController", "m_hPawn"))
+        off_steam    = self._off("CBasePlayerController","m_steamID")
+        off_name     = self._off("CCSPlayerController",  "m_sSanitizedPlayerName")
+        off_money_s  = self._off("CCSPlayerController",  "m_pInGameMoneyServices")
+        off_color    = self._off("CCSPlayerController",  "m_iCompTeammateColor")
+        off_armor    = self._off("C_CSPlayerPawn",       "m_ArmorValue")
+        off_eye      = self._off("C_CSPlayerPawn",       "m_angEyeAngles")
+        off_isvc     = self._off("C_BasePlayerPawn",     "m_pItemServices")
+        off_defuser  = self._off("CCSPlayer_ItemServices","m_bHasDefuser")
+        off_helmet   = self._off("CCSPlayer_ItemServices","m_bHasHelmet")
+        off_money    = self._off("CCSPlayerController_InGameMoneyServices","m_iAccount")
+        off_ticking  = self._off("C_PlantedC4",          "m_bBombTicking")
+        off_blow     = self._off("C_PlantedC4",          "m_flC4Blow")
+        off_defused  = self._off("C_PlantedC4",          "m_bBombDefused")
+        off_defusing = self._off("C_PlantedC4",          "m_bBeingDefused")
+        off_defuse_t = self._off("C_PlantedC4",          "m_flDefuseCountDown")
+        off_subid    = self._off("C_BaseEntity",          "m_nSubclassID")
+        off_wtype    = self._off("CCSWeaponBaseVData",    "m_WeaponType")
+        off_wname    = self._off("CCSWeaponBaseVData",    "m_szName")
+
+        curtime = self.mem.f32(self.gvars + _CURTIME_OFF) if self.gvars else 0.0
+
+        players   = []
+        bomb_data = {}
+        grenades  = []
+        dropped   = []
+        carrier_idx = 0   # entity index of the pawn carrying the C4 this frame
+
+        chunk_cache: dict[int, int] = {}
+        seen_ctrls: set[int] = set()   # dedupe: a player is reachable via both its controller and pawn
+
+        def _special(ent: int, cls: str) -> bool:
+            """Handle carried C4 / planted C4 / grenade entities. Shared between
+            the 0..1023 walk and the high-slot targets from _hi_sweep()."""
+            nonlocal bomb_data, carrier_idx
+            cls = _canon_special(cls)
+            if not cls:
+                return False
+
+            # ── carried c4 ───────────────────────────────────────────────────
+            if cls == "C_C4":
+                owner = 0
+                if off_owner:
+                    h_own = self.mem.u32(ent + off_owner)
+                    owner = self._entity_by_handle(h_own, chunk_cache)
+                    if owner:
+                        carrier_idx = h_own & ENT_ENTRY_MASK
+                # A carried C4's own scene node is stale (it holds wherever the
+                # bomb was picked up, or 0,0,0 if never rendered), so a carried
+                # bomb is wherever its carrier is.
+                x, y, _ = self._origin(owner) if owner else self._origin(ent)
+                if x or y:
+                    bomb_data = {"x": x, "y": y}
+                return True
+
+            # ── planted c4 ───────────────────────────────────────────────────
+            if cls == "C_PlantedC4":
+                if off_ticking and self.mem.bool8(ent + off_ticking):
+                    blow_time = (self.mem.f32(ent + off_blow) - curtime) if off_blow else 0.0
+                    if blow_time > 0:
+                        x, y, _ = self._origin(ent)
+                        bomb_data = {
+                            "x":             x,
+                            "y":             y,
+                            "m_blow_time":   blow_time,
+                            "m_is_defused":  self.mem.bool8(ent + off_defused)  if off_defused  else False,
+                            "m_is_defusing": self.mem.bool8(ent + off_defusing) if off_defusing else False,
+                            "m_defuse_time": (self.mem.f32(ent + off_defuse_t) - curtime) if off_defuse_t else 0.0,
+                        }
+                return True
+
+            # ── grenades ─────────────────────────────────────────────────────
+            if cls in _GRENADE_CLASSES:
+                deployed = False
+
+                if cls == "C_SmokeGrenadeProjectile":
+                    off_stb = self._off("C_SmokeGrenadeProjectile", "m_nSmokeEffectTickBegin")
+                    if off_stb:
+                        deployed = self.mem.u32(ent + off_stb) > 0
+                    else:
+                        deployed = self.mem.bool8(ent + _SMOKE_DID_EFFECT_OFF)
+                    # Always show: small dot while in-flight, full circle when deployed
+
+                elif cls == "C_Inferno":
+                    off_post = self._off("C_Inferno", "m_bInPostEffectTime")
+                    if off_post and self.mem.bool8(ent + off_post):
+                        return True  # fire ended naturally or smoked out
+                    deployed = True
+
+                elif cls == "C_MolotovProjectile":
+                    deployed = False  # show as in-flight dot only
+
+                x, y, z = self._origin(ent)
+                if x or y:
+                    entry = {"x": x, "y": y, "z": z,
+                             "type":     _GRENADE_CLASS_TO_TYPE[cls],
+                             "deployed": deployed}
+
+                    # For C_Inferno, attach individual fire positions for accurate shape
+                    if cls == "C_Inferno":
+                        off_fpos = self._off("C_Inferno", "m_firePositions")
+                        off_fcnt = self._off("C_Inferno", "m_nFireCount")
+                        if off_fpos and off_fcnt:
+                            fire_count = min(self.mem.u32(ent + off_fcnt), 64)
+                            if fire_count > 0:
+                                raw = self.mem._read(ent + off_fpos, fire_count * 12)
+                                fire_pts = []
+                                for fi in range(fire_count):
+                                    fx, fy = struct.unpack_from("<ff", raw, fi * 12)
+                                    fire_pts.append({"x": fx, "y": fy})
+                                entry["firePts"] = fire_pts
+
+                    grenades.append(entry)
+                return True
+
+            return False
+
+        for idx in range(1024):
+            ent = self._entity_ptr(idx, chunk_cache)
+            if not ent:
+                continue
+
+            cls = self._class_name(ent)
+            if not cls:
+                continue
+
+            # ── player controller ─────────────────────────────────────────────
+            if _cls_eq(cls, "CCSPlayerController"):
+                ctrl = ent
+                h_pawn = self.mem.u32(ctrl + off_hpawn) if off_hpawn else INVALID_EHANDLE
+                if h_pawn == INVALID_EHANDLE:
+                    continue
+                pawn = self._entity_by_handle(h_pawn, chunk_cache)
+                if not pawn:
+                    continue
+
+                if ctrl in seen_ctrls:
+                    continue
+                seen_ctrls.add(ctrl)
+
+                # Team can sit on the controller or the pawn depending on build.
+                # m_iTeamNum is a uint8 at an unaligned offset, so mask off the
+                # three neighbouring bytes a 32-bit read would drag in.
+                team = (self.mem.u32(ctrl + off_team_) & 0xFF) if off_team_ else 0
+                if team not in (2, 3):
+                    team = (self.mem.u32(pawn + off_team_) & 0xFF) if off_team_ else team
+                if team not in (2, 3):
+                    continue
+
+                health  = self.mem.i32(pawn + off_health) if off_health else 0
+                is_dead = health <= 0
+
+                x, y, z = self._origin(pawn)
+                eye_yaw  = self.mem.f32(pawn + off_eye + 4) if off_eye else 0.0
+                steam_id = self.mem.u64(ctrl + off_steam) if off_steam else 0
+                armor    = self.mem.i32(pawn + off_armor) if off_armor else 0
+
+                pname = self._read_utl_string(ctrl + off_name) if off_name else ""
+
+                color = 5
+                if off_color:
+                    c = self.mem.u32(ctrl + off_color)
+                    color = c if c != 0xFFFFFFFF else 5
+
+                money = 0
+                if off_money_s and off_money:
+                    ms = self.mem.ptr(ctrl + off_money_s)
+                    if ms:
+                        money = self.mem.i32(ms + off_money)
+
+                has_helmet  = False
+                has_defuser = False
+                if off_isvc:
+                    isvc = self.mem.ptr(pawn + off_isvc)
+                    if isvc:
+                        has_helmet  = self.mem.bool8(isvc + off_helmet)  if off_helmet  else False
+                        has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
+
+                weapons  = self._read_weapons(pawn, chunk_cache)
+                has_bomb = False   # resolved after the C4 pass below
+
+                if ctrl == lpc and not is_dead:
+                    if not getattr(self, "_local_logged", False):
+                        self._local_logged = True
+                        # One-shot sanity line: separates "dropped by the team gate"
+                        # from "present but origin is zero" from "backend fine, webapp
+                        # not rendering" — three failures that look identical otherwise.
+                        log.info("local player resolved: name=%r team=%d health=%d "
+                                 "pos=(%.1f, %.1f, %.1f) weapons=%s",
+                                 pname, team, health, x, y, z,
+                                 weapons.get("m_active") or weapons.get("m_primary") or "none")
+
+                players.append({
+                    "m_idx":        idx,
+                    "m_name":       pname,
+                    "m_color":      color,
+                    "m_team":       team,
+                    "m_health":     health,
+                    "m_is_dead":    is_dead,
+                    "m_is_local":   (ctrl == lpc),
+                    "m_model_name": "",
+                    "m_steam_id":   str(steam_id),
+                    "m_money":      money,
+                    "m_armor":      armor,
+                    "m_position":   {"x": x, "y": y, "z": z},
+                    "m_eye_angle":  eye_yaw,
+                    "m_has_helmet": has_helmet,
+                    "m_has_defuser":has_defuser,
+                    "m_weapons":    weapons,
+                    "m_has_bomb":   has_bomb,
+                    "_pawn_idx":    h_pawn & ENT_ENTRY_MASK,
+                })
+
+            # ── carried c4 / planted c4 / grenades ───────────────────────────
+            elif _special(ent, cls):
+                pass
+
+            # ── dropped weapons ───────────────────────────────────────────────
+            elif off_subid and off_wtype and off_wname and off_owner:
+                owner = self.mem.u32(ent + off_owner)
+                if owner == INVALID_EHANDLE:
+                    wdata = self.mem.ptr(ent + off_subid + 0x08)
+                    if wdata:
+                        wtype = self.mem.u32(wdata + off_wtype)
+                        if wtype in {*_PRIMARY_TYPES, _PISTOL_TYPE, 8, _GRENADE_TYPE}:  # 8=zeus
+                            wname = self.mem.string_field(wdata + off_wname)
+                            if wname and wname.startswith("weapon_"):
+                                x, y, _ = self._origin(ent)
+                                if x or y:
+                                    dropped.append({"x": x, "y": y, "name": wname[7:]})
+
+        # ── entities above idx 1023 (C4 / planted C4 / projectiles) ──────────
+        # Discovery sweep every 3rd frame; known targets are read every frame.
+        self._hi_tick = (self._hi_tick + 1) % 3
+        if self._hi_tick == 0 and self._classnames_available:
+            try:
+                self._hi_sweep()
+            except Exception as e:
+                log.debug("hi-slot sweep failed: %s", e)
+        for hi_idx, (hi_ptr, hi_cls) in list(self._hi_targets.items()):
+            ent = self._entity_ptr(hi_idx, chunk_cache)
+            if ent != hi_ptr:
+                continue   # slot recycled since last sweep — wait for rediscovery
+            try:
+                _special(ent, hi_cls)
+            except Exception as e:
+                log.debug("hi-slot handler failed for %s@%d: %s", hi_cls, hi_idx, e)
+
+        # Direct-slot player fallback — used when class names are unavailable (CS2
+        # build post-14168 where classinfo chain offsets haven't been resolved yet).
+        # Iterates entity slots 1-64 as player controllers, bypassing class name lookup.
+        if not self._classnames_available and not players and off_hpawn:
+            try:
+                chunk0 = self.mem.u64(self.entity_system + self._entity_chunk_off)
+                if _valid_ptr(chunk0):
+                    for slot in range(1, 65):
+                        ctrl = self.mem.ptr(chunk0 + self._entity_stride * slot)
+                        if not ctrl or ctrl in seen_ctrls:
+                            continue
+                        team = (self.mem.u32(ctrl + off_team_) & 0xFF) if off_team_ else 0
+                        if team not in (2, 3):
+                            continue
+                        h_pawn = self.mem.u32(ctrl + off_hpawn)
+                        if h_pawn == INVALID_EHANDLE:
+                            continue
+                        pawn = self._entity_by_handle(h_pawn, chunk_cache)
+                        if not pawn:
+                            continue
+                        seen_ctrls.add(ctrl)
+
+                        health  = self.mem.i32(pawn + off_health) if off_health else 0
+                        is_dead = health <= 0
+                        x, y, z = self._origin(pawn)
+                        eye_yaw  = self.mem.f32(pawn + off_eye + 4) if off_eye else 0.0
+                        steam_id = self.mem.u64(ctrl + off_steam) if off_steam else 0
+                        armor    = self.mem.i32(pawn + off_armor) if off_armor else 0
+                        pname    = self._read_utl_string(ctrl + off_name) if off_name else ""
+                        color = 5
+                        if off_color:
+                            c = self.mem.u32(ctrl + off_color)
+                            color = c if c != 0xFFFFFFFF else 5
+                        money = 0
+                        if off_money_s and off_money:
+                            ms = self.mem.ptr(ctrl + off_money_s)
+                            if ms:
+                                money = self.mem.i32(ms + off_money)
+                        has_helmet = has_defuser = False
+                        if off_isvc:
+                            isvc = self.mem.ptr(pawn + off_isvc)
+                            if isvc:
+                                has_helmet  = self.mem.bool8(isvc + off_helmet)  if off_helmet  else False
+                                has_defuser = self.mem.bool8(isvc + off_defuser) if off_defuser else False
+                        weapons  = self._read_weapons(pawn, chunk_cache)
+                        has_bomb = False   # resolved after the C4 pass below
+                        players.append({
+                            "m_idx":        slot,
+                            "m_name":       pname,
+                            "m_color":      color,
+                            "m_team":       team,
+                            "m_health":     health,
+                            "m_is_dead":    is_dead,
+                            "m_is_local":   (ctrl == lpc),
+                            "m_model_name": "",
+                            "m_steam_id":   str(steam_id),
+                            "m_money":      money,
+                            "m_armor":      armor,
+                            "m_position":   {"x": x, "y": y, "z": z},
+                            "m_eye_angle":  eye_yaw,
+                            "m_has_helmet": has_helmet,
+                            "m_has_defuser":has_defuser,
+                            "m_weapons":    weapons,
+                            "m_has_bomb":   has_bomb,
+                            "_pawn_idx":    h_pawn & ENT_ENTRY_MASK,
+                        })
+            except Exception as e:
+                log.debug("direct-slot player collection (win) failed: %s", e)
+
+        # Global-pointer bomb fallbacks — always run when entity walk found nothing.
+        # These use cs2-dumper global RVAs that work on both Windows and Linux,
+        # bypassing the entity class-name walk entirely.
+        if not bomb_data:
+            # ── dwPlantedC4 global fallback ───────────────────────────────────
+            # Bypasses entity-list class-name walk entirely.
+            # Try interpretation A: CUtlVector<CHandle<C_PlantedC4>>
+            # Try interpretation B: C_PlantedC4* direct pointer
+            dw_c4 = self._g.get("dwPlantedC4", 0)
+            if dw_c4 and self.client_base:
+                try:
+                    base_addr = self.client_base + dw_c4
+
+                    # ── Interpretation A: CUtlVector ─────────────────────────
+                    # Layout: [ptr(8)] [nAlloc(4)] [nGrow(4)] [m_Size(4)]
+                    # m_Size is at offset +16, NOT +8 (that's nAllocationCount)
+                    count = self.mem.u32(base_addr + 16)   # m_Size
+                    if count and count < 8:
+                        data_ptr = self.mem.u64(base_addr)
+                        if _valid_ptr(data_ptr):
+                            for i in range(count):
+                                handle = self.mem.u32(data_ptr + i * 4)
+                                if handle == INVALID_EHANDLE:
+                                    continue
+                                c4 = self._entity_by_handle(handle, chunk_cache)
+                                if not c4:
+                                    # chunk may be null — try loading it fresh
+                                    slot = handle & ENT_ENTRY_MASK
+                                    ch   = slot >> 9
+                                    ep   = self.mem.ptr(self.entity_system + 8 * ch + self._entity_chunk_off)
+                                    if ep and _valid_ptr(ep):
+                                        chunk_cache[ch] = ep
+                                        c4 = self._entity_by_handle(handle, chunk_cache)
+                                if not c4:
+                                    continue
+                                ticking = (not off_ticking) or self.mem.bool8(c4 + off_ticking)
+                                if ticking:
+                                    blow_time = (self.mem.f32(c4 + off_blow) - curtime) if off_blow else 0.0
+                                    if blow_time > 0 or not off_blow:
+                                        x, y, _ = self._origin(c4)
+                                        bomb_data = {
+                                            "x":             x,
+                                            "y":             y,
+                                            "m_blow_time":   blow_time,
+                                            "m_is_defused":  self.mem.bool8(c4 + off_defused)  if off_defused  else False,
+                                            "m_is_defusing": self.mem.bool8(c4 + off_defusing) if off_defusing else False,
+                                            "m_defuse_time": (self.mem.f32(c4 + off_defuse_t) - curtime) if off_defuse_t else 0.0,
+                                        }
+                                        break
+
+                    # ── Interpretation B: direct C_PlantedC4* pointer ────────
+                    if not bomb_data:
+                        c4_direct = self.mem.ptr(base_addr)
+                        if _valid_ptr(c4_direct):
+                            ticking = (not off_ticking) or self.mem.bool8(c4_direct + off_ticking)
+                            if ticking:
+                                blow_time = (self.mem.f32(c4_direct + off_blow) - curtime) if off_blow else 0.0
+                                if blow_time > 0 or not off_blow:
+                                    x, y, _ = self._origin(c4_direct)
+                                    if x or y:
+                                        bomb_data = {
+                                            "x":             x,
+                                            "y":             y,
+                                            "m_blow_time":   blow_time,
+                                            "m_is_defused":  self.mem.bool8(c4_direct + off_defused)  if off_defused  else False,
+                                            "m_is_defusing": self.mem.bool8(c4_direct + off_defusing) if off_defusing else False,
+                                            "m_defuse_time": (self.mem.f32(c4_direct + off_defuse_t) - curtime) if off_defuse_t else 0.0,
+                                        }
+
+                except Exception as e:
+                    log.warning("dwPlantedC4 global fallback failed: %s", e)
+
+        if not bomb_data:
+            # ── dwWeaponC4 global fallback — carried bomb ─────────────────────
+            dw_c4w = self._g.get("dwWeaponC4", 0)
+            if dw_c4w and self.client_base:
+                try:
+                    base_addr = self.client_base + dw_c4w
+
+                    def _try_c4_entity(c4: int) -> bool:
+                        nonlocal bomb_data, carrier_idx
+                        if not c4:
+                            return False
+                        owner = 0
+                        if off_owner:
+                            h_own = self.mem.u32(c4 + off_owner)
+                            owner = self._entity_by_handle(h_own, chunk_cache)
+                            if owner:
+                                carrier_idx = h_own & ENT_ENTRY_MASK
+                        x, y, _ = self._origin(owner) if owner else self._origin(c4)
+                        if x or y:
+                            bomb_data = {"x": x, "y": y}
+                            return True
+                        return False
+
+                    # Try as CHandle<C_C4> (4-byte handle)
+                    handle = self.mem.u32(base_addr)
+                    if handle != INVALID_EHANDLE:
+                        c4 = self._entity_by_handle(handle, chunk_cache)
+                        if not c4:
+                            slot = handle & ENT_ENTRY_MASK
+                            ch   = slot >> 9
+                            ep   = self.mem.ptr(self.entity_system + 8 * ch + self._entity_chunk_off)
+                            if ep and _valid_ptr(ep):
+                                chunk_cache[ch] = ep
+                                c4 = self._entity_by_handle(handle, chunk_cache)
+                        _try_c4_entity(c4)
+
+                    # Try as C_C4* direct pointer (8-byte)
+                    if not bomb_data:
+                        c4_direct = self.mem.ptr(base_addr)
+                        if _valid_ptr(c4_direct) and _try_c4_entity(c4_direct):
+                            pass   # bomb_data set by _try_c4_entity
+
+                except Exception as e:
+                    log.warning("dwWeaponC4 global fallback failed: %s", e)
+
+        # The C4 sits at a higher entity slot than every player, so the carrier
+        # is only known once the whole walk (and the fallbacks) have run.
+        self._bomb_own_idx = carrier_idx
+        for p in players:
+            pidx = p.pop("_pawn_idx", 0)
+            p["m_has_bomb"] = bool(carrier_idx) and pidx == carrier_idx and not p["m_is_dead"]
+
+
+        view_matrix = []
+        if self.view_matrix_addr:
+            raw_vm = self.mem._read(self.view_matrix_addr, 64)
+            if raw_vm and len(raw_vm) == 64:
+                try:
+                    view_matrix = list(struct.unpack_from("<16f", raw_vm))
+                    if not all(math.isfinite(v) for v in view_matrix):
+                        view_matrix = []
+                except Exception:
+                    pass
+
+        return {
+            "m_local_team":   local_team,
+            "m_players":      players,
+            "m_bomb":         bomb_data if bomb_data else None,
+            "m_grenades":     grenades,
+            "m_dropped":      dropped,
+            "m_map":          map_name,
+            "m_view_matrix":  view_matrix,
+            "m_server_ip":    _LOCAL_IP,
+            "m_tailscale_ip": _TAILSCALE_IP,
+            "m_funnel_url":   _FUNNEL_URL,
+            "m_http_port":    HTTP_PORT,
+        }
+
+
+    def _get_map_name(self) -> str:
+        if not self.gvars:
+            return "invalid"
+        char_ptr = self.mem.ptr(self.gvars + _MAP_NAME_OFF)
+        name = self.mem.cstring(char_ptr) if char_ptr else ""
+        if not name or "<empty>" in name or len(name) < 3:
+            return "invalid"
+        # Strip path prefix (e.g. "maps/de_dust2" → "de_dust2")
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        # Strip file extension (e.g. "de_dust2.vpk" → "de_dust2")
+        if "." in name:
+            name = name.rsplit(".", 1)[0]
+        return name
+
+
+# ── config ───────────────────────────────────────────────────────────────────
+def load_config() -> dict:
+    default = {
+        "m_use_localhost": True,
+        "m_local_ip": "localhost",
+        "m_public_ip": "",
+        # Off by default: GitHub releases ship the cross-platform build, which
+        # would replace this Windows-only fork on the next start.
+        "auto_update": False,
+        "github_token": "",
+        # SteamID64 of the person playing (e.g. "76561198000000000").
+        # Leave empty to auto-detect from Steam's loginusers.vdf.
+        "steam_id": "",
+    }
+    if CONFIG_FILE.exists():
+        saved = json.loads(CONFIG_FILE.read_text())
+        return {**default, **saved}
+    CONFIG_FILE.write_text(json.dumps(default, indent=2))
+    return default
+
+
+def _detect_steam_id() -> int:
+    """Best-effort SteamID64 of the most recently logged-in Steam user,
+    read from Steam's loginusers.vdf."""
+    candidates: list[Path] = []
+    for env in ("ProgramFiles(x86)", "ProgramFiles"):
+        base = os.environ.get(env)
+        if base:
+            candidates.append(Path(base) / "Steam" / "config" / "loginusers.vdf")
+
+    for vdf in candidates:
+        try:
+            if not vdf.is_file():
+                continue
+            text = vdf.read_text(errors="ignore")
+            blocks = re.findall(r'"(7656\d{13})"\s*\{(.*?)\}', text, re.S)
+            if not blocks:
+                continue
+            for sid, body in blocks:
+                if re.search(r'"MostRecent"\s*"1"', body):
+                    return int(sid)
+            return int(blocks[0][0])
+        except Exception:
+            continue
+    return 0
+
+
+def _resolve_steam_id(cfg: dict) -> frozenset:
+    """SteamID64(s) used to identify the local player on the radar.
+
+    config.json steam_id can be a single ID string/int or a list of IDs,
+    allowing multiple accounts (e.g. ["76561198000000000","76561198000000001"]).
+    Falls back to auto-detection from loginusers.vdf when not configured.
+    Returns a frozenset of ints.
+    """
+    raw = cfg.get("steam_id", "")
+    ids: set[int] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            s = str(item).strip()
+            if s.isdigit() and int(s) > 0:
+                ids.add(int(s))
+    else:
+        s = str(raw).strip()
+        # Support comma-separated list in a single string
+        for part in s.split(","):
+            part = part.strip()
+            if part.isdigit() and int(part) > 0:
+                ids.add(int(part))
+    if ids:
+        log.info("steam_id(s) from config: %s", sorted(ids))
+        return frozenset(ids)
+    sid = _detect_steam_id()
+    if sid:
+        cfg["steam_id"] = str(sid)
+        try:
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        except Exception:
+            log.debug("could not persist steam_id to config.json", exc_info=True)
+        log.info("steam_id auto-detected from loginusers.vdf: %d (saved to config.json)", sid)
+        return frozenset([sid])
+    log.warning("steam_id not set and auto-detection failed — falling back to "
+                "m_bIsLocalPlayerController for local-player detection "
+                "(set \"steam_id\" in config.json if team colors are wrong)")
+    return frozenset()
+
+
+def _check_for_update(config: dict) -> None:
+    """On startup: check GitHub for a newer release and self-update if auto_update is on."""
+    if not config.get("auto_update", False):
+        log.info("auto-update disabled")
+        return
+
+    token = config.get("github_token", "")
+    headers = {
+        "User-Agent":  "cs2-radar/updater",
+        "Accept":      "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        req = urllib.request.Request(GITHUB_API, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            release = json.loads(r.read())
+    except Exception as exc:
+        log.debug("update check skipped: %s", exc)
+        return
+
+    latest_tag = release.get("tag_name", "")
+    if not latest_tag or latest_tag <= VERSION:
+        log.info("up to date (%s)", VERSION)
+        return
+
+    print(f"\n  Update available: {VERSION} -> {latest_tag}")
+
+    if not getattr(sys, "frozen", False):
+        log.info("(dev mode — skipping auto-download)")
+        return
+
+    assets = release.get("assets", [])
+
+    def _pick_asset() -> dict | None:
+        return next((a for a in assets if a["name"].lower().endswith(".exe")), None)
+        return None
+
+    exe_asset = _pick_asset()
+    if not exe_asset:
+        log.warning("update: no compatible %s asset found in release %s", sys.platform, latest_tag)
+        return
+
+    total_bytes = exe_asset["size"]
+    print(f"  Downloading {exe_asset['name']} ({total_bytes // 1024 // 1024} MB)...")
+    log.info("update: downloading %s (%d bytes)", exe_asset["name"], total_bytes)
+    exe_path = Path(sys.executable)
+    asset_suffix = "".join(Path(exe_asset["name"]).suffixes)
+    new_path = exe_path.with_name(f"_update_new{asset_suffix if asset_suffix else exe_path.suffix}")
+
+    try:
+        import time as _time
+        dl_headers = dict(headers)
+        dl_headers["Accept"] = "application/octet-stream"
+        dl_req = urllib.request.Request(exe_asset["browser_download_url"], headers=dl_headers)
+        with urllib.request.urlopen(dl_req, timeout=180) as r:
+            _start = _time.time()
+            _done  = 0
+            _chunk = 65536  # 64 KB chunks
+            with open(new_path, "wb") as f:
+                while True:
+                    buf = r.read(_chunk)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    _done += len(buf)
+                    _elapsed = max(_time.time() - _start, 0.001)
+                    _speed   = _done / _elapsed          # bytes/sec
+                    if total_bytes > 0:
+                        _pct = min(100, _done * 100 // total_bytes)
+                        _bar = "█" * (_pct // 3) + "░" * (33 - _pct // 3)
+                        print(f"\r  [{_bar}] {_pct:3d}%  {_speed/1024:6.0f} KB/s", end="", flush=True)
+                    else:
+                        print(f"\r  {_done//1024} KB  {_speed/1024:.0f} KB/s", end="", flush=True)
+        print()
+        log.info("update: download complete in %.1fs", _time.time() - _start)
+    except Exception as exc:
+        print()
+        log.warning("update download failed: %s", exc)
+        try:
+            new_path.unlink()
+        except Exception:
+            pass
+        return
+
+    print(f"  Restarting to apply {latest_tag}...\n")
+    import subprocess
+    bat = exe_path.parent / "_update.bat"
+    bat.write_text(
+        "@echo off\n"
+        "timeout /t 2 /nobreak >nul\n"
+        f'move /y "{new_path}" "{exe_path}" >nul\n'
+        f'start "" "{exe_path}"\n'
+        "del \"%~f0\"\n",
+        encoding="utf-8",
+    )
+    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW)
+    sys.exit(0)
+
+
+# ── connected browser clients ─────────────────────────────────────────────────
+_clients: set = set()
+
+
+def _json_sanitize(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    if isinstance(value, list):
+        return [_json_sanitize(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_sanitize(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_sanitize(item) for key, item in value.items()}
+    return value
+
+
+async def _ws_handler(websocket):
+    _clients.add(websocket)
+    log.info("browser connected  (%d total)", len(_clients))
+    try:
+        async for msg in websocket:
+            try:
+                data = json.loads(msg)
+                if data.get("type") == "set_auto_update":
+                    cfg = load_config()
+                    cfg["auto_update"] = bool(data.get("value", True))
+                    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+                    log.info("auto-update -> %s", cfg["auto_update"])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        _clients.discard(websocket)
+        log.info("browser disconnected (%d total)", len(_clients))
+
+
+async def _broadcast(payload: str):
+    dead = set()
+    for ws in list(_clients):
+        try:
+            await ws.send(payload)
+        except Exception:
+            dead.add(ws)
+    _clients.difference_update(dead)
+
+
+def _static_path() -> str | None:
+    if getattr(sys, "frozen", False):
+        p = Path(sys._MEIPASS) / "webapp_dist"
+    else:
+        p = Path(__file__).parent.parent / "webapp" / "dist"
+    if p.exists():
+        return str(p)
+    log.warning("static dir not found at %s — HTTP server disabled (run npm run build)", p)
+    return None
+
+
+def _maps_cache_path() -> Path:
+    """Writable directory where auto-extracted map data is stored."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "maps_cache"
+    return Path(__file__).parent.parent / "webapp" / "public" / "data"
+
+
+# ── map extractor ─────────────────────────────────────────────────────────────
+class MapExtractor:
+    """Reads CS2 overview files and extracts map data on demand."""
+
+    def __init__(self, cache_dir: Path):
+        self.cache_dir = cache_dir
+        self.cs2_dir   = self._find_cs2()
+        self._seen: set[str] = set()
+        if self.cs2_dir:
+            log.info("map extractor: CS2 found at %s", self.cs2_dir)
+        else:
+            log.warning("map extractor: CS2 install not found — auto-extraction disabled")
+
+    def _find_cs2(self) -> Path | None:
+        return find_cs2_root()
+
+    def _parse_overview_text(self, content: str) -> dict | None:
+        import re
+        px = re.search(r'"pos_x"\s+"([^"]+)"', content)
+        py = re.search(r'"pos_y"\s+"([^"]+)"', content)
+        sc = re.search(r'"scale"\s+"([^"]+)"', content)
+        if not (px and py and sc):
+            return None
+        try:
+            return {"x": float(px.group(1)), "y": float(py.group(1)), "scale": float(sc.group(1))}
+        except ValueError:
+            return None
+
+    def _parse_overview(self, txt: Path) -> dict | None:
+        try:
+            return self._parse_overview_text(txt.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            return None
+
+    def _extract_from_vpk(self, map_name: str, out: Path) -> bool:
+        """Extract map overview txt + radar png from CS2's pak01 VPK archives."""
+        dir_vpk = self.cs2_dir / "game" / "csgo" / "pak01_dir.vpk"
+        if not dir_vpk.exists():
+            log.warning("map extractor: pak01_dir.vpk not found")
+            return False
+        try:
+            raw = dir_vpk.read_bytes()
+            sig, ver = struct.unpack_from("<II", raw, 0)
+            if sig != 0x55AA1234:
+                log.warning("map extractor: bad VPK signature 0x%X", sig)
+                return False
+            tree_start = 28 if ver == 2 else 12  # v2 has 16 extra header bytes
+
+            pos = tree_start
+
+            def read_str():
+                nonlocal pos
+                end = raw.index(b'\x00', pos)
+                s = raw[pos:end].decode('utf-8', errors='ignore')
+                pos = end + 1
+                return s
+
+            # What we want: (ext, path, name)
+            targets = {
+                ("txt", "resource/overviews", map_name),
+                ("png", "resource/overviews", f"{map_name}_radar"),
+            }
+            found = {}
+
+            while pos < len(raw):
+                ext = read_str()
+                if not ext:
+                    break
+                while True:
+                    path = read_str()
+                    if not path:
+                        break
+                    # VPK stores paths without leading slash, forward-slash separated
+                    norm_path = path.replace("\\", "/").strip("/")
+                    while True:
+                        name = read_str()
+                        if not name:
+                            break
+                        # VPKDirectoryEntry: crc32 preload_bytes archive_index entry_offset entry_length suffix
+                        crc32, pre_bytes, arch_idx, entry_off, entry_len, suffix = \
+                            struct.unpack_from("<IHHIIH", raw, pos)
+                        pos += 18
+                        preload = raw[pos:pos + pre_bytes]
+                        pos += pre_bytes
+
+                        key = (ext, norm_path, name)
+                        if key in targets:
+                            found[key] = (arch_idx, entry_off, entry_len, preload)
+
+            def _read_entry(arch_idx, entry_off, entry_len, preload):
+                if entry_len == 0:
+                    return preload
+                pak = self.cs2_dir / "game" / "csgo" / f"pak01_{arch_idx:03d}.vpk"
+                with open(pak, "rb") as f:
+                    f.seek(entry_off)
+                    return preload + f.read(entry_len)
+
+            txt_key = ("txt", "resource/overviews", map_name)
+            png_key = ("png", "resource/overviews", f"{map_name}_radar")
+
+            if txt_key not in found or png_key not in found:
+                log.warning("map extractor: %s not found in VPK (txt=%s png=%s)",
+                            map_name, txt_key in found, png_key in found)
+                return False
+
+            txt_bytes = _read_entry(*found[txt_key])
+            png_bytes = _read_entry(*found[png_key])
+
+            overview = self._parse_overview_text(txt_bytes.decode("utf-8", errors="ignore"))
+            if not overview:
+                log.warning("map extractor: failed to parse VPK overview txt for %s", map_name)
+                return False
+
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "data.json").write_text(json.dumps(overview))
+            (out / "radar.png").write_bytes(png_bytes)
+            (out / "background.png").write_bytes(png_bytes)
+            (out / "callouts.json").write_text(json.dumps({"map": map_name, "callouts": []}))
+            log.info("map extractor: VPK extracted %s  (x=%.0f y=%.0f scale=%.2f)",
+                     map_name, overview["x"], overview["y"], overview["scale"])
+            return True
+
+        except Exception:
+            log.exception("map extractor: VPK extraction failed for %s", map_name)
+            return False
+
+    def ensure(self, map_name: str) -> bool:
+        """
+        Extract map data from CS2 if not already in cache.
+        Returns True if data is available (pre-existing or just extracted).
+        """
+        if map_name in self._seen or map_name == "invalid":
+            return map_name in self._seen
+
+        out = self.cache_dir / map_name
+        if (out / "data.json").exists() and (out / "radar.png").exists():
+            self._seen.add(map_name)
+            return True
+
+        if not self.cs2_dir:
+            return False
+
+        # Try loose files first (workshop maps / older installs)
+        ov_dir  = self.cs2_dir / "game" / "csgo" / "resource" / "overviews"
+        txt_src = ov_dir / f"{map_name}.txt"
+        png_src = ov_dir / f"{map_name}_radar.png"
+
+        if txt_src.exists() and png_src.exists():
+            import shutil
+            data = self._parse_overview(txt_src)
+            if data:
+                try:
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "data.json").write_text(json.dumps(data))
+                    shutil.copy(png_src, out / "radar.png")
+                    shutil.copy(png_src, out / "background.png")
+                    (out / "callouts.json").write_text(json.dumps({"map": map_name, "callouts": []}))
+                    log.info("map extractor: extracted %s  (x=%.0f y=%.0f scale=%.2f)",
+                             map_name, data["x"], data["y"], data["scale"])
+                    self._seen.add(map_name)
+                    return True
+                except Exception as exc:
+                    log.error("map extractor: write failed for %s: %s", map_name, exc)
+
+        # Standard CS2 maps live inside VPK archives
+        if self._extract_from_vpk(map_name, out):
+            self._seen.add(map_name)
+            return True
+
+        log.warning("map extractor: could not extract %s (not in loose files or VPK)", map_name)
+        return False
+        return True
+
+
+def _start_http(static_dir: str, maps_cache: Path):
+    """
+    Serve the webapp with a dual-directory handler:
+      /data/<map>/* → maps_cache first, then static_dir fallback
+      everything else → static_dir
+    """
+    import posixpath, urllib.parse, mimetypes
+
+    _static = static_dir
+    _maps   = maps_cache
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def log_error(self, *_): pass
+
+        def _resolve(self, url_path: str) -> Path | None:
+            p = urllib.parse.unquote(url_path).split("?")[0]
+            p = posixpath.normpath(p).lstrip("/")
+            parts = p.split("/")
+
+            # /data/<map>/... → check maps_cache first
+            if len(parts) >= 2 and parts[0] == "data":
+                candidate = _maps / Path(*parts[1:])
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+
+            # fallback to static dir
+            candidate = Path(_static) / Path(*parts) if parts else Path(_static)
+            if candidate.is_file():
+                return candidate
+            # try index.html for SPA routes
+            index = Path(_static) / "index.html"
+            return index if index.exists() else None
+
+        def do_GET(self):
+            # Proxy WebSocket upgrades to the WS server at WS_PORT
+            if (self.path.split("?")[0] == "/cs2_webradar" and
+                    self.headers.get("Upgrade", "").lower() == "websocket"):
+                self._proxy_ws()
+                return
+            path = self._resolve(self.path)
+            if path is None or not path.exists():
+                self.send_error(404)
+                return
+            mime, _ = mimetypes.guess_type(str(path))
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mime or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _proxy_ws(self):
+            import hashlib, base64
+            key = self.headers.get("Sec-WebSocket-Key", "")
+            accept = base64.b64encode(
+                hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+            ).decode()
+            # Complete the handshake with the browser
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.wfile.flush()
+            # Open a raw TCP connection to the actual WS server
+            try:
+                backend = socket.create_connection(("localhost", WS_PORT), timeout=5)
+            except Exception as e:
+                log.warning("ws proxy: backend connect failed: %s", e)
+                return
+            # Send a proper WebSocket upgrade to the backend
+            backend.sendall((
+                f"GET /cs2_webradar HTTP/1.1\r\n"
+                f"Host: localhost:{WS_PORT}\r\n"
+                f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ).encode())
+            # Consume the backend's 101 response before forwarding raw frames
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                chunk = backend.recv(4096)
+                if not chunk:
+                    backend.close()
+                    return
+                resp += chunk
+            # Remove socket timeouts then forward bytes in both directions
+            client_sock = self.connection
+            client_sock.settimeout(None)
+            backend.settimeout(None)
+            def _fwd(src, dst):
+                try:
+                    while True:
+                        d = src.recv(65536)
+                        if not d:
+                            break
+                        dst.sendall(d)
+                except Exception:
+                    pass
+                finally:
+                    for s in (src, dst):
+                        try: s.close()
+                        except: pass
+            t1 = threading.Thread(target=_fwd, args=(client_sock, backend), daemon=True)
+            t2 = threading.Thread(target=_fwd, args=(backend, client_sock), daemon=True)
+            t1.start(); t2.start()
+            t1.join(); t2.join()
+            # Tell the HTTP machinery not to reuse this socket after the proxy ends
+            self.close_connection = True
+
+    import socketserver
+    class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+        def handle_error(self, request, client_address):
+            # Suppress noisy but harmless "client closed connection" errors
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+                return
+            super().handle_error(request, client_address)
+
+    srv = _Server(("0.0.0.0", HTTP_PORT), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    log.info("HTTP  -> http://0.0.0.0:%d  (maps_cache=%s)", HTTP_PORT, _maps)
+
+
+def _ensure_firewall_rules():
+    """
+    Ensure the local firewall allows inbound traffic on both ports when possible.
+    Uses program-based rules (most reliable) + port-based rules as backup.
+    Force-deletes then re-adds so locale/state issues never cause a stale rule.
+    """
+    import subprocess
+
+
+    exe = sys.executable  # path to the running exe (or python.exe in dev)
+
+    def _netsh(*args):
+        r = subprocess.run(
+            ["netsh", "advfirewall", "firewall", *args],
+            capture_output=True, text=True, encoding="utf-8", errors="ignore"
+        )
+        return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+    # 1. Program-based rule — allows all ports used by this exe
+    prog_rule = "CS2Radar-Program"
+    _netsh("delete", "rule", f"name={prog_rule}")  # remove stale copy if any
+    ok, out = _netsh(
+        "add", "rule", f"name={prog_rule}",
+        "dir=in", "action=allow", "protocol=TCP",
+        f"program={exe}", "enable=yes",
+    )
+    if ok:
+        log.info("firewall: program rule added for %s", exe)
+    else:
+        log.warning("firewall: program rule failed: %s", out)
+
+    # 2. Port-based rules as fallback
+    for rule_name, port in [("CS2Radar-WS", WS_PORT), ("CS2Radar-HTTP", HTTP_PORT)]:
+        _netsh("delete", "rule", f"name={rule_name}")
+        ok, out = _netsh(
+            "add", "rule", f"name={rule_name}",
+            "dir=in", "action=allow", "protocol=TCP",
+            f"localport={port}", "enable=yes",
+        )
+        if ok:
+            log.info("firewall: port rule added  %s -> %d", rule_name, port)
+        else:
+            log.warning("firewall: port rule failed %s: %s", rule_name, out)
+
+
+# ── main async loop ───────────────────────────────────────────────────────────
+async def _run_async():
+    cfg = load_config()
+    steam_id = _resolve_steam_id(cfg)
+    _ensure_firewall_rules()
+    offsets = load_offsets()
+    # Baseline for auto-refresh: the client-module mtime that `offsets` reflects.
+    # When the on-disk module changes (CS2 update) we re-run load_offsets().
+    offset_dll_mtime = _client_dll_mtime()
+    _last_offset_check = time.monotonic()
+
+    mem    = Memory()
+    reader: CS2Reader | None = None
+    _last_waiting_log = 0.0
+    loop = asyncio.get_event_loop()
+    process_names = cs2_process_names()
+    process_label = ", ".join(process_names)
+
+    # host=None → bind all interfaces (IPv4 + IPv6) so WebView2's ::1 also works
+    async with websockets.serve(_ws_handler, None, WS_PORT):
+        log.info("WS    -> ws://localhost:%d/cs2_webradar", WS_PORT)
+
+        static_dir = _static_path()
+        maps_cache = _maps_cache_path()
+        extractor  = MapExtractor(maps_cache)
+        if static_dir:
+            try:
+                _start_http(static_dir, maps_cache)
+            except OSError as e:
+                log.warning("HTTP server could not start on port %d (%s) — Vite dev server already running there", HTTP_PORT, e)
+            webbrowser.open(f"http://localhost:{HTTP_PORT}")
+
+        _last_map = None
+        _none_streak = 0          # consecutive collect() → None frames
+        _last_good_data = 0.0     # time of last successful broadcast
+
+        _setup_failures = 0
+        _did_local_scan  = False
+
+        while True:
+            # ── ensure CS2 is open ────────────────────────────────────────────
+            if not mem.handle:
+                pid = await loop.run_in_executor(None, lambda: mem.find_pid(process_names[0]))
+                if not pid:
+                    log.info("waiting for CS2 process to start (%s)...", process_label)
+                    await asyncio.sleep(3)
+                    continue
+                if not mem.open(pid):
+                    log.error("OpenProcess failed — run as administrator")
+                    await asyncio.sleep(3)
+                    continue
+                log.info("found CS2  pid=%d", pid)
+                reader = None
+                _setup_failures = 0
+                # Force an offset freshness check on this newly-attached process:
+                # CS2 may have been updated and relaunched while we kept running.
+                _last_offset_check = 0.0
+
+            # ── auto-refresh offsets when the game updates ────────────────────
+            # The client module's on-disk mtime is the ground-truth "game was
+            # updated" signal. When it advances past what `offsets` reflects,
+            # re-run load_offsets() (re-fetch cs2-dumper + re-scan the binary)
+            # and rebuild the reader so setup() re-resolves everything live —
+            # no manual restart needed. Throttled; also fired once per attach.
+            now_m = time.monotonic()
+            if mem.handle and now_m - _last_offset_check >= OFFSET_RECHECK_SEC:
+                _last_offset_check = now_m
+                cur_mtime = await loop.run_in_executor(
+                    None, lambda: _client_dll_mtime(mem.pid))
+                if cur_mtime and cur_mtime > offset_dll_mtime + 1.0:
+                    log.info("client module changed on disk (game update) — "
+                             "auto-refreshing offsets")
+                    try:
+                        new_off = await loop.run_in_executor(None, load_offsets)
+                        offsets.clear()
+                        offsets.update(new_off)
+                        offset_dll_mtime = cur_mtime
+                        reader = None            # force setup() with fresh offsets
+                        _did_local_scan = False
+                    except Exception as exc:
+                        # Keep running on the current offsets; retry next interval.
+                        log.warning("offset auto-refresh failed (%s) — keeping current offsets", exc)
+
+            # ── detect stale handle (CS2 restarted without triggering OSError) ─
+            # After several consecutive setup failures, verify the process is
+            # still alive. ReadProcessMemory on a dead handle returns zeros
+            # silently, which looks identical to "entity system not ready".
+            if reader is None and _setup_failures > 0 and _setup_failures % 10 == 0:
+                live_pid = await loop.run_in_executor(None, lambda: mem.find_pid(process_names[0]))
+                if live_pid and live_pid != mem.pid:
+                    log.warning("CS2 restarted (old pid=%d new pid=%d) — reopening handle",
+                                mem.pid, live_pid)
+                    mem.close()
+                    continue   # re-enter loop to reopen handle
+
+            # ── ensure reader is initialised ──────────────────────────────────
+            if reader is None:
+                r = CS2Reader(mem, offsets, steam_id=steam_id)
+                ok = await loop.run_in_executor(None, r.setup)
+                if not ok:
+                    _setup_failures += 1
+                    # After ~5s of null entity-system, scan client.dll for updated offsets
+                    if not _did_local_scan and _setup_failures >= 5:
+                        log.warning("offsets may be stale — scanning client.dll for updated values...")
+                        patched = await loop.run_in_executor(None, lambda: _scan_globals_from_dll(offsets, mem.pid))
+                        _did_local_scan = True
+                        if patched:
+                            log.info("offset scan complete — retrying with new values")
+                    now = time.time()
+                    if now - _last_waiting_log >= 5:
+                        log.info("waiting for CS2 to load into a game...")
+                        _last_waiting_log = now
+                    await asyncio.sleep(1)
+                    continue
+                _setup_failures = 0
+                reader = r
+                log.info("reader ready — watching entity list at 10 Hz")
+
+            # ── collect + broadcast ───────────────────────────────────────────
+            try:
+                data = await loop.run_in_executor(None, reader.collect)
+                if data is None:
+                    _none_streak += 1
+                    now = time.time()
+                    if now - _last_waiting_log >= 5:
+                        log.info("in CS2 but not in an active match (team=spectator/none)")
+                        _last_waiting_log = now
+                    # If data has been None for >30s and we had good data before,
+                    # verify CS2 is still alive (silent RPM failure won't raise OSError
+                    # until the next valid address read; this catches the gap).
+                    if _none_streak > 100 and _last_good_data > 0:
+                        live_pid = await loop.run_in_executor(None, lambda: mem.find_pid(process_names[0]))
+                        if not live_pid or live_pid != mem.pid:
+                            log.warning("CS2 gone (watchdog) — detaching")
+                            mem.close()
+                            reader = None
+                            _none_streak = 0
+                else:
+                    _none_streak = 0
+                    _last_good_data = time.time()
+                    map_name = data.get("m_map", "invalid")
+                    if map_name != _last_map and map_name != "invalid":
+                        _last_map = map_name
+                        await loop.run_in_executor(None, extractor.ensure, map_name)
+                    await _broadcast(json.dumps(_json_sanitize(data), allow_nan=False))
+            except OSError as exc:
+                log.warning("CS2 process lost (%s) — detaching", exc)
+                mem.close()
+                reader = None
+                _none_streak = 0
+            except Exception as exc:
+                log.error("unexpected error in collect/send: %s", exc, exc_info=True)
+
+            await asyncio.sleep(POLL_INTERVAL)
+
+
+def run(overlay: bool = False, esp: bool = False):
+    mode = "esp" if esp else ("minimap" if overlay else "browser")
+    log.info("mode: %s", mode)
+
+    if mode in ("minimap", "esp"):
+        base_url = (f"http://localhost:{HTTP_PORT}"
+                    if _static_path() is not None
+                    else "http://localhost:5173")
+        log.info("%s will load from %s", mode, base_url)
+
+        t = threading.Thread(
+            target=lambda: asyncio.run(_run_async()),
+            daemon=True, name="radar-backend"
+        )
+        t.start()
+        time.sleep(1.5)
+
+        if mode == "minimap":
+            import overlay as ov
+            ov.start(f"{base_url}?mode=minimap")
+        else:
+            import esp as esp_mod
+            esp_mod.start(f"{base_url}?mode=esp")
+
+        t.join()
+    else:
+        asyncio.run(_run_async())
+
+
+def _pick_mode() -> str:
+    """
+    Interactive mode selector shown at startup when no CLI flag is passed.
+    Returns "browser", "minimap", or "esp".
+    """
+    print("\n" + "=" * 50)
+    print("  CS2 Radar — Select Mode")
+    print("=" * 50)
+    print("  1  Normal  — browser radar (open in any browser)")
+    print("  2  Overlay — small draggable minimap on screen")
+    print("  3  ESP     — full-screen transparent player boxes")
+    print("               (CS2 must be in Borderless Windowed!)")
+    print("=" * 50)
+
+    while True:
+        try:
+            choice = input("  Enter 1 / 2 / 3: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = "1"
+
+        if choice == "1":
+            print("  -> Normal mode\n")
+            return "browser"
+        elif choice == "2":
+            print("  -> Minimap overlay  (drag the bar to reposition)\n")
+            return "minimap"
+        elif choice == "3":
+            print("  -> ESP overlay  (Ctrl+C in this window to exit)\n")
+            return "esp"
+        else:
+            print("  Please enter 1, 2 or 3.")
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="CS2 Radar")
+    ap.add_argument("--normal",     action="store_true", help="Browser radar mode (default)")
+    ap.add_argument("--overlay",    action="store_true", help="Small draggable minimap overlay")
+    ap.add_argument("--esp",        action="store_true", help="Full-screen transparent ESP overlay")
+    ap.add_argument("--no-funnel",  action="store_true", help="Skip Tailscale Funnel this run")
+    args = ap.parse_args()
+
+    cfg = load_config()
+    threading.Thread(target=_check_for_update, args=(cfg,), daemon=True).start()
+
+    if args.no_funnel:
+        log.info("tailscale: skipped (--no-funnel)")
+        _FUNNEL_URL = None
+    else:
+        _FUNNEL_URL = _setup_tailscale(cfg)
+
+    if args.esp:
+        _mode = "esp"
+    elif args.overlay:
+        _mode = "minimap"
+    elif args.normal:
+        _mode = "browser"
+    else:
+        _mode = _pick_mode()
+
+    run(overlay=(_mode == "minimap"), esp=(_mode == "esp"))

@@ -3764,6 +3764,7 @@ async def _ws_handler(websocket):
     _clients.add(websocket)
     log.info("browser connected  (%d total)", len(_clients))
     try:
+        await websocket.send(json.dumps(_status))
         async for msg in websocket:
             try:
                 data = json.loads(msg)
@@ -3789,6 +3790,41 @@ async def _broadcast(payload: str):
         except Exception:
             dead.add(ws)
     _clients.difference_update(dead)
+
+
+# ── helper status (shown as a pill in the webapp) ─────────────────────────────
+# Every failure used to look the same in the browser — an empty radar. The main
+# loop records which stage it is stuck at here; it rides along on every payload
+# and is pushed on its own while there is no game data to carry it.
+_status: dict = {"type": "status", "state": "starting", "detail": "Starting up"}
+_status_last: tuple = ()
+_status_sent_at = 0.0
+
+
+def _set_status(state: str, detail: str) -> None:
+    _status["state"], _status["detail"] = state, detail
+
+
+async def _broadcast_status() -> None:
+    """Send the status on change, and otherwise at most once a second."""
+    global _status_last, _status_sent_at
+    key = (_status["state"], _status["detail"])
+    now = time.monotonic()
+    if key == _status_last and now - _status_sent_at < 1.0:
+        return
+    _status_last, _status_sent_at = key, now
+    await _broadcast(json.dumps(_status))
+
+
+def _payload_status(data: dict) -> tuple[str, str]:
+    """Judge a successful collect(): did the offsets produce plausible players?"""
+    players = data.get("m_players") or []
+    if not players:
+        return "no_players", "In a match but no players were found (offsets may be stale)"
+    if all(not (p["m_position"]["x"] or p["m_position"]["y"]) for p in players):
+        return "stale_offsets", (f"{len(players)} players found but all at (0, 0) "
+                                 "(offsets may be stale)")
+    return "ok", f"{len(players)} players · {data.get('m_map', '?')}"
 
 
 def _static_path() -> str | None:
@@ -4246,6 +4282,8 @@ async def _run_async():
                 pid = await loop.run_in_executor(None, lambda: mem.find_pid(process_names[0]))
                 if not pid:
                     log.info("waiting for CS2 process to start (%s)...", process_label)
+                    _set_status("no_game", "Waiting for CS2 to start")
+                    await _broadcast_status()
                     await asyncio.sleep(3)
                     continue
                 if not mem.open(pid):
@@ -4255,6 +4293,9 @@ async def _run_async():
                         log.error("process memory open failed — run with ptrace permission/root")
                     else:
                         log.error("process memory open failed")
+                    _set_status("no_access", "Can't read CS2 memory: run the helper as "
+                                + ("administrator" if IS_WINDOWS else "root"))
+                    await _broadcast_status()
                     await asyncio.sleep(3)
                     continue
                 log.info("found CS2  pid=%d", pid)
@@ -4323,6 +4364,10 @@ async def _run_async():
                     if now - _last_waiting_log >= 5:
                         log.info("waiting for CS2 to load into a game...")
                         _last_waiting_log = now
+                    # Setup also fails in the main menu (no entity system yet), so
+                    # this cannot tell stale offsets apart from "not in a game".
+                    _set_status("loading", "CS2 found, waiting for a match to load")
+                    await _broadcast_status()
                     await asyncio.sleep(1)
                     continue
                 _setup_failures = 0
@@ -4338,6 +4383,8 @@ async def _run_async():
                     if now - _last_waiting_log >= 5:
                         log.info("in CS2 but not in an active match (team=spectator/none)")
                         _last_waiting_log = now
+                    _set_status("menu", "In CS2 but not playing a match (menu or spectating)")
+                    await _broadcast_status()
                     # If data has been None for >30s and we had good data before,
                     # verify CS2 is still alive (silent RPM failure won't raise OSError
                     # until the next valid address read; this catches the gap).
@@ -4355,9 +4402,12 @@ async def _run_async():
                     if map_name != _last_map and map_name != "invalid":
                         _last_map = map_name
                         await loop.run_in_executor(None, extractor.ensure, map_name)
+                    _set_status(*_payload_status(data))
+                    data["m_status"] = {"state": _status["state"], "detail": _status["detail"]}
                     await _broadcast(json.dumps(_json_sanitize(data), allow_nan=False))
             except OSError as exc:
                 log.warning("CS2 process lost (%s) — detaching", exc)
+                _set_status("no_game", "Lost the CS2 process, waiting for it to restart")
                 mem.close()
                 reader = None
                 _none_streak = 0

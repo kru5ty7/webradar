@@ -6,6 +6,7 @@ import Radar from "./components/radar";
 import { getLatency, Latency } from "./components/latency";
 import MaskedIcon from "./components/maskedicon";
 import EspOverlay from "./components/EspOverlay";
+import StatusPill from "./components/StatusPill";
 
 /* change this to '1' if you want to use offline (your own pc only) */
 const USE_LOCALHOST = 0;
@@ -267,6 +268,7 @@ const App = () => {
   const [kbps, setKbps] = useState(0);
   const [bannerOpened, setBannerOpened] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [status, setStatus] = useState({ state: "connecting", detail: "Connecting to the radar helper" });
 
   // Persist settings and sync auto-update preference to backend
   useEffect(() => {
@@ -301,6 +303,7 @@ const App = () => {
 
       ws.onclose = () => {
         console.warn("WS closed — retrying in 3 s");
+        setStatus({ state: "no_helper", detail: "Radar helper not running (reconnecting automatically)" });
         if (alive) retryTimer = setTimeout(connect, 3000);
       };
 
@@ -310,6 +313,21 @@ const App = () => {
         setAverageLatency(getLatency());
         const raw = typeof event.data === "string" ? event.data : await event.data.text();
         const parsedData = JSON.parse(raw);
+
+        // Standalone status update: sent while the helper has no game data.
+        if (parsedData.type === "status") {
+          setStatus(parsedData);
+          // Out of a match: drop the last frame instead of freezing it on screen.
+          if (["no_game", "loading", "menu"].includes(parsedData.state)) {
+            setPlayerArray([]);
+            setBombData(null);
+            setGrenades([]);
+            setDropped([]);
+          }
+          return;
+        }
+        // Older helpers don't send m_status; receiving data at all means OK.
+        setStatus(parsedData.m_status || { state: "ok", detail: "" });
         setPlayerArray(parsedData.m_players);
         setLocalTeam(parsedData.m_local_team);
         setBombData(parsedData.m_bomb);
@@ -406,6 +424,7 @@ const App = () => {
 
         {/* ── Radar ── */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          {status.state !== "ok" && <StatusPill status={status} compact />}
           {mapData && playerArray.length > 0 ? (
             <Radar
               playerArray={playerArray}
@@ -424,7 +443,7 @@ const App = () => {
               justifyContent: "center", color: "rgba(255,255,255,0.4)",
               fontSize: 12,
             }}>
-              Waiting for game data…
+              {status.detail || "Waiting for game data…"}
             </div>
           )}
         </div>
@@ -464,6 +483,8 @@ const App = () => {
           </div>
         )}
 
+        <StatusPill status={status} />
+
         {/* Latency/settings overlay — absolutely positioned, not in flex flow */}
         <Latency
           value={averageLatency}
@@ -499,7 +520,7 @@ const App = () => {
           )) || (
             <div id="radar" className="relative flex items-center justify-center">
               <h1 className="radar_message">
-                Connected! Waiting for data from usermode
+                {status.detail || "Waiting for data from the radar helper"}
               </h1>
             </div>
           )}

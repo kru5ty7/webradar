@@ -1,10 +1,4 @@
 # ========================
-# Project-specific ignores
-# ========================
-kernelmode/
-usermode/src/driver/driver.hpp
-
-# ========================
 # Visual Studio / C++
 # ========================
 .vs/

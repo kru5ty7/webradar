@@ -35,15 +35,17 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          "VERSION = `"$env:TAG`"" | Out-File -FilePath ai_agent_helper/version.py -Encoding utf8NoBOM
+          "VERSION = `"$env:TAG`"" | Out-File -FilePath ai_agent_helper_windows/version.py -Encoding utf8NoBOM
 
+      # The Windows exe comes from the Windows-only fork, which carries the
+      # Windows fixes; the Linux binary below still builds from ai_agent_helper.
       - name: Build exe
-        run: cd ai_agent_helper && pyinstaller radar.spec --noconfirm
+        run: cd ai_agent_helper_windows && pyinstaller radar.spec --noconfirm
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-binary
-          path: ai_agent_helper/dist/GameOverlayService.exe
+          path: ai_agent_helper_windows/dist/cs2-webradar.exe
           if-no-files-found: error
 
   build-linux:
@@ -112,7 +114,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/GameOverlayService.exe
+            dist/cs2-webradar.exe
             dist/cs2-radar-linux
           generate_release_notes: true
           fail_on_unmatched_files: true

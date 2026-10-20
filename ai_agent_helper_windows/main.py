@@ -876,7 +876,9 @@ class CS2Reader:
         self._lpc_via_steam     = False  # True when _lpc_fallback was matched by steam_id (vs. flag)
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
         self._entity_chunk_off = 16   # always 0x10 on Windows
-        self._entity_stride    = 120  # MSVC CEntityIdentity is always 120 bytes
+        self._entity_stride    = 120  # default; measured in setup() (current builds: 112)
+        self._last_noplayer_check = 0.0  # monotonic time of last _no_player_check
+        self._last_noplayer_log   = 0.0
         # Class-name chain offsets — auto-detected at startup via _detect_classinfo_offsets
         self._classinfo_id_off    = _IDENTITY_CLASS_OFF    # CEntityIdentity → CSchemaClassInfo*
         self._classinfo_name1_off = _CLASSINFO_NAME1_OFF   # CSchemaClassInfo → intermediate ptr
@@ -935,8 +937,17 @@ class CS2Reader:
         log.info("entity system @ 0x%016X", self.entity_system)
         log.info("global vars   @ 0x%016X", self.gvars)
 
+        # The identity size changed across builds (120 -> 112); a wrong value
+        # still reads slot 0 (CWorld) fine and silently hides everything else.
+        chunk0 = self.mem.ptr(self.entity_system + self._entity_chunk_off)
+        if _valid_ptr(chunk0):
+            scores = self._stride_scores(chunk0)
+            self._entity_stride = self._detect_stride(chunk0, scores)
+            log.info("entity stride %d (slot-index matches per stride: %s)",
+                     self._entity_stride, scores)
+
         # Auto-detect class-name chain offsets; if they changed (CS2 update) this
-        # fixes class-name resolution on both platforms without a code update.
+        # fixes class-name resolution without a code update.
         if self.entity_system:
             self._detect_classinfo_offsets()
 
@@ -953,6 +964,71 @@ class CS2Reader:
             return 0
         return self.mem.ptr(entry_list + self._entity_stride * (idx & 0x1FF))
 
+
+    def _stride_scores(self, chunk0_abs: int) -> dict[int, int]:
+        """For each candidate CEntityIdentity size, count how many of the first
+        256 slots hold an identity whose m_Idx equals its slot number."""
+        scores = {}
+        for st in (112, 120, 128):
+            n = 0
+            for slot in range(256):
+                idobj = chunk0_abs + st * slot
+                if not _valid_ptr(self.mem.u64(idobj)):
+                    continue
+                midx = self.mem.u32(idobj + _IDENTITY_IDX_OFF)
+                if (midx & 0x7FFF) == slot and (midx >> 15) > 0:
+                    n += 1
+            scores[st] = n
+        return scores
+
+    def _detect_stride(self, chunk0_abs: int, scores: dict[int, int] | None = None) -> int:
+        """Pick the CEntityIdentity stride (bytes) that makes the most slots'
+        stored m_Idx match their slot number. Robust across CS2 builds where the
+        identity size has been 112 or 120. Keeps the current stride when the
+        evidence is too thin (main menu: only the world entity exists, and slot
+        0 matches at every stride)."""
+        scores = scores or self._stride_scores(chunk0_abs)
+        best_st = max(scores, key=lambda st: scores[st])
+        if scores[best_st] < 3 or scores[best_st] == scores.get(self._entity_stride, -1):
+            return self._entity_stride
+        return best_st
+
+    def _no_player_check(self) -> None:
+        """Called when the entity walk found no players although the local
+        controller has a team. Re-measures the entity stride (a wrong value
+        hides every entity but slot 0, and the build changed it 120 -> 112)
+        and, if that is not it, logs what the walk actually saw."""
+        now = time.monotonic()
+        if now - self._last_noplayer_check < 5.0:
+            return
+        self._last_noplayer_check = now
+        chunk0 = self.mem.ptr(self.entity_system + self._entity_chunk_off)
+        if not _valid_ptr(chunk0):
+            return
+        scores = self._stride_scores(chunk0)
+        st = self._detect_stride(chunk0, scores)
+        if st != self._entity_stride:
+            log.warning("no players found: entity stride %d -> %d "
+                        "(slot-index matches per stride: %s)", self._entity_stride, st, scores)
+            self._entity_stride = st
+            return
+        if now - self._last_noplayer_log < 30.0:
+            return
+        self._last_noplayer_log = now
+        cache: dict[int, int] = {}
+        names: dict[str, int] = {}
+        n = 0
+        for idx in range(1024):
+            ent = self._entity_ptr(idx, cache)
+            if not ent:
+                continue
+            n += 1
+            cls = self._class_name(ent) or "<no name>"
+            names[cls] = names.get(cls, 0) + 1
+        top = sorted(names.items(), key=lambda kv: -kv[1])[:10]
+        log.warning("no players found: stride=%d matches=%s; %d entities in slots "
+                    "0-1023; classes: %s", self._entity_stride, scores, n,
+                    " | ".join(f"{c}={k}" for c, k in top) or "none")
 
     def _entity_by_handle(self, handle: int, chunk_cache: dict) -> int:
         # A zero handle is unset, not "entity 0". Without this it resolves to
@@ -1919,6 +1995,9 @@ class CS2Reader:
 
                 except Exception as e:
                     log.warning("dwWeaponC4 global fallback failed: %s", e)
+
+        if not players:
+            self._no_player_check()
 
         # The C4 sits at a higher entity slot than every player, so the carrier
         # is only known once the whole walk (and the fallbacks) have run.

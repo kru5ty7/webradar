@@ -1026,7 +1026,7 @@ class CS2Reader:
             return self._entity_stride
         return best_st
 
-    def _no_player_check(self) -> None:
+    def _no_player_check(self, lpc: int) -> None:
         """Called when the entity walk found no players although the local
         controller has a team. Re-measures the entity stride (a wrong value
         hides every entity but slot 0, and the build changed it 120 -> 112)
@@ -1048,20 +1048,109 @@ class CS2Reader:
         if now - self._last_noplayer_log < 30.0:
             return
         self._last_noplayer_log = now
+        log.warning("no players found — chain report follows (repeats every 30 s "
+                    "while this lasts):\n%s", self._chain_report(lpc, chunk0, scores))
+
+    def _chain_report(self, lpc: int, chunk0: int, scores: dict[int, int]) -> str:
+        """Every step from the entity list to a player's position, with raw
+        values, so one radar.log excerpt shows where the chain breaks."""
+        lines: list[str] = []
+        add = lines.append
         cache: dict[int, int] = {}
-        names: dict[str, int] = {}
-        n = 0
-        for idx in range(1024):
-            ent = self._entity_ptr(idx, cache)
-            if not ent:
-                continue
-            n += 1
-            cls = self._class_name(ent) or "<no name>"
-            names[cls] = names.get(cls, 0) + 1
-        top = sorted(names.items(), key=lambda kv: -kv[1])[:10]
-        log.warning("no players found: stride=%d matches=%s; %d entities in slots "
-                    "0-1023; classes: %s", self._entity_stride, scores, n,
-                    " | ".join(f"{c}={k}" for c, k in top) or "none")
+
+        def section(title, fn):
+            add(f"  [{title}]")
+            try:
+                fn()
+            except Exception as exc:          # a report must never kill collect()
+                add(f"    !! {type(exc).__name__}: {exc}")
+
+        def builds():
+            add(f"    offsets from cs2-dumper build {self._offsets.get('_build') or '?'}; "
+                f"installed game build {_game_build() or '?'}")
+            for cls, fld in (("CCSPlayerController", "m_hPlayerPawn"),
+                             ("CBasePlayerController", "m_steamID"),
+                             ("C_BaseEntity", "m_iTeamNum"), ("C_BaseEntity", "m_iHealth"),
+                             ("C_BaseEntity", "m_pGameSceneNode"),
+                             ("CGameSceneNode", "m_vecAbsOrigin")):
+                add(f"    {cls}.{fld} = {self._off(cls, fld)}")
+
+        def entity_list():
+            add(f"    entity_system=0x{self.entity_system:X} chunk_off={self._entity_chunk_off} "
+                f"chunk0=0x{chunk0:X} (16-byte aligned: {chunk0 % 16 == 0}) "
+                f"stride in use={self._entity_stride}")
+            add(f"    slot-index matches per stride: {scores}")
+            for d in (-8, 8):    # catches an array base that is off by one pointer
+                add(f"    ...with chunk0 {d:+d}: {self._stride_scores(chunk0 + d)}")
+            nonnull = sum(1 for c in range(1, 32)
+                          if _valid_ptr(self.mem.ptr(self.entity_system + 8 * c + self._entity_chunk_off)))
+            add(f"    non-null chunk pointers 1..31: {nonnull}")
+
+        def first_slots():
+            st = self._entity_stride
+            for slot in range(8):
+                entry = chunk0 + st * slot
+                inst  = self.mem.ptr(entry)
+                midx  = self.mem.u32(entry + _IDENTITY_IDX_OFF)
+                cls   = self._class_name(inst) if inst else ""
+                add(f"    slot {slot}: entry=0x{entry:X} inst=0x{inst:X} m_Idx=0x{midx:08X} "
+                    f"(idx={midx & 0x7FFF}, serial={midx >> 15}) class={cls or '-'}")
+
+        def classinfo():
+            mode = ("designer-name" if self._use_designer_name else
+                    "char*" if self._classinfo_charptr_mode else "std::string")
+            add(f"    mode={mode} id_off=0x{self._classinfo_id_off:X} "
+                f"name1=0x{self._classinfo_name1_off:X} name2=0x{self._classinfo_name2_off:X} "
+                f"available={self._classnames_available}")
+            names: dict[str, int] = {}
+            n = 0
+            for idx in range(1024):
+                ent = self._entity_ptr(idx, cache)
+                if ent:
+                    n += 1
+                    c = self._class_name(ent) or "<no name>"
+                    names[c] = names.get(c, 0) + 1
+            top = sorted(names.items(), key=lambda kv: -kv[1])[:12]
+            add(f"    {n} entities in slots 0-1023; classes: "
+                + (" | ".join(f"{c}={k}" for c, k in top) or "none"))
+
+        def local_chain():
+            off_steam = self._off("CBasePlayerController", "m_steamID")
+            off_team  = self._off("C_BaseEntity", "m_iTeamNum")
+            off_hp    = self._off("CCSPlayerController", "m_hPlayerPawn")
+            off_hpold = self._off("CBasePlayerController", "m_hPawn")
+            off_hlth  = self._off("C_BaseEntity", "m_iHealth")
+            add(f"    lpc=0x{lpc:X} (from dwLocalPlayerController @0x{self.lpc_addr:X}: "
+                f"0x{self.mem.ptr(self.lpc_addr):X}) class={self._class_name(lpc) or '-'}")
+            add(f"    steamID read={self.mem.u64(lpc + off_steam) if off_steam else '?'} "
+                f"config={sorted(self.steam_ids) or 'none'}")
+            add(f"    team byte={self.mem.u32(lpc + off_team) & 0xFF if off_team else '?'}")
+            h = self.mem.u32(lpc + off_hp) if off_hp else 0
+            h_old = self.mem.u32(lpc + off_hpold) if off_hpold else 0
+            add(f"    m_hPlayerPawn=0x{h:08X} (idx {h & ENT_ENTRY_MASK})  m_hPawn=0x{h_old:08X}")
+            pawn = self._entity_by_handle(h, cache)
+            add(f"    pawn=0x{pawn:X} class={self._class_name(pawn) if pawn else '-'}")
+            if pawn:
+                node = self.mem.ptr(pawn + self._off("C_BaseEntity", "m_pGameSceneNode"))
+                add(f"    pawn team={self.mem.u32(pawn + off_team) & 0xFF if off_team else '?'} "
+                    f"health={self.mem.i32(pawn + off_hlth) if off_hlth else '?'} "
+                    f"scene_node=0x{node:X} origin={tuple(round(v, 1) for v in self._origin(pawn))}")
+
+        def controller_slots():
+            st, hits = self._entity_stride, []
+            for slot in range(1, 65):
+                inst = self.mem.ptr(chunk0 + st * slot)
+                if inst:
+                    hits.append(f"{slot}:{self._class_name(inst) or '?'}")
+            add(f"    slots 1-64 with an entity: {len(hits)}  " + " ".join(hits[:12]))
+
+        section("offsets", builds)
+        section("entity list", entity_list)
+        section("first slots", first_slots)
+        section("class names", classinfo)
+        section("local controller -> pawn", local_chain)
+        section("controller slots", controller_slots)
+        return "\n".join(lines)
 
     def _entity_by_handle(self, handle: int, chunk_cache: dict) -> int:
         # A zero handle is unset, not "entity 0". Without this it resolves to
@@ -2030,7 +2119,7 @@ class CS2Reader:
                     log.warning("dwWeaponC4 global fallback failed: %s", e)
 
         if not players:
-            self._no_player_check()
+            self._no_player_check(lpc)
 
         # The C4 sits at a higher entity slot than every player, so the carrier
         # is only known once the whole walk (and the fallbacks) have run.
@@ -2366,7 +2455,9 @@ def _payload_status(data: dict) -> tuple[str, str]:
     """Judge a successful collect(): did the offsets produce plausible players?"""
     players = data.get("m_players") or []
     if not players:
-        return "no_players", "In a match but no players were found (offsets may be stale)"
+        # Not necessarily offsets: the stride or class-name lookup can cause it
+        # too. radar.log has a step-by-step chain report for exactly this.
+        return "no_players", "In a match but no players found (see chain report in radar.log)"
     if all(not (p["m_position"]["x"] or p["m_position"]["y"]) for p in players):
         return "stale_offsets", (f"{len(players)} players found but all at (0, 0) "
                                  "(offsets may be stale)")

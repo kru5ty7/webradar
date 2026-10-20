@@ -566,6 +566,20 @@ def _parse_fields(raw: dict) -> dict:
     return out
 
 
+def _game_build() -> int:
+    """Installed CS2 build, e.g. PatchVersion=1.41.9.1 -> 14191 — the same
+    number cs2-dumper publishes as build_number. 0 if steam.inf is not found."""
+    root = find_cs2_root()
+    inf = root / "game" / "csgo" / "steam.inf" if root else None
+    try:
+        for line in inf.read_text(errors="ignore").splitlines():
+            if line.startswith("PatchVersion="):
+                return int(line.split("=", 1)[1].strip().replace(".", ""))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return 0
+
+
 def load_offsets(force: bool = False) -> dict:
     """Load offsets from the cache, or fetch + scan fresh ones. ``force`` skips
     the cache (the webapp's "refresh offsets" button)."""
@@ -582,6 +596,14 @@ def load_offsets(force: bool = False) -> dict:
             cache_age = time.time() - cache_ts
             dll_found = dll_mtime > 0
             cache_ok  = (cache_ts > dll_mtime) if dll_found else (cache_age < CACHE_MAX_AGE)
+            # cs2-dumper publishes a few hours after each game update. A cache
+            # fetched in that gap holds the previous build's offsets yet is
+            # newer than client.dll, so the mtime check alone keeps it forever.
+            game_build, cache_build = _game_build(), cached.get("_build", 0)
+            if cache_ok and game_build and cache_build != game_build:
+                cache_ok = False
+                log.info("cached offsets are for build %s, game is build %d — refetching",
+                         cache_build or "unknown", game_build)
             if cache_ok:
                 reason = "client.dll unchanged" if dll_found else f"age {cache_age/3600:.1f}h < {CACHE_MAX_AGE/3600:.0f}h TTL"
                 log.info("using cached offsets (%s)", reason)
@@ -596,6 +618,15 @@ def load_offsets(force: bool = False) -> dict:
     try:
         raw_off    = _fetch(f"{DUMPER_BASE}/offsets.json")
         raw_client = _fetch(f"{DUMPER_BASE}/client_dll.json")
+        try:
+            dumper_build = int(_fetch(f"{DUMPER_BASE}/info.json").get("build_number", 0))
+        except Exception:
+            dumper_build = 0
+        game_build = _game_build()
+        if game_build and dumper_build and dumper_build < game_build:
+            log.warning("cs2-dumper is on build %d but the game is build %d — field "
+                        "offsets may be stale until it updates (re-checked every start)",
+                        dumper_build, game_build)
 
         client_globals = (
             raw_off.get("client.dll") or
@@ -604,10 +635,12 @@ def load_offsets(force: bool = False) -> dict:
 
         result = {
             "_ts":     time.time(),
+            "_build":  dumper_build,   # cs2-dumper build these offsets describe
             "globals": client_globals,
             "fields":  _parse_fields(raw_client),
         }
-        log.info("offsets fetched from cs2-dumper")
+        log.info("offsets fetched from cs2-dumper (build %s, game build %s)",
+                 dumper_build or "?", game_build or "?")
     except Exception as exc:
         log.warning("fetch failed: %s", exc)
         if CACHE_FILE.exists():

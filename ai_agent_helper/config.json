@@ -1,9 +1,0 @@
-{
-  "m_use_localhost": true,
-  "m_local_ip": "localhost",
-  "m_public_ip": "",
-  "auto_update": true,
-  "github_token": "",
-  "steam_id": ["76561198000000000", "76561198000000001"],
-  "tailscale_funnel": false
-}

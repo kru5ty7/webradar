@@ -60,10 +60,22 @@ ai_agent_helper/build/
 ai_agent_helper/dist/
 ai_agent_helper/*.spec.bak
 
+ai_agent_helper_windows/build/
+ai_agent_helper_windows/dist/
+
 # Runtime files (regenerated on each run)
-ai_agent_helper/offsets_cache.json
-ai_agent_helper/radar.log
-ai_agent_helper/config.json
+ai_agent_helper*/offsets_cache*.json
+ai_agent_helper*/radar.log*
+ai_agent_helper*/config.json
+ai_agent_helper*/test_output.txt
+
+# Locally compiled helper extension (built from chunk_scanner.c)
+ai_agent_helper/*.so
+
+# Stray files in the repo root: terminal logs, local tool binaries
+/XTerm*
+/kubectl
+/minikube-*
 
 # ========================
 # OS generated files

@@ -1255,6 +1255,7 @@ def _looks_like_designer(s: str) -> bool:
 # hardcoded offsets that never come from schema
 _CURTIME_OFF          = 0x30    # CGlobalVarsBase::m_curtime
 _MAP_NAME_OFF         = 0x188   # CGlobalVarsBase::map name string
+_LINUX_MAP_NAME_OFF   = 0x198   # same field in the Linux build (measured 2026-10-20)
 _IDENTITY_CLASS_OFF   = 0x08    # CEntityIdentity::m_pClassInfo
 _IDENTITY_IDX_OFF     = 0x10    # CEntityIdentity::m_Idx
 _CLASSINFO_NAME1_OFF  = 0xE0    # class_info -> intermediate ptr (updated for CS2 build 14153+)
@@ -1331,6 +1332,7 @@ class CS2Reader:
         self._lpc_via_steam     = False  # True when _lpc_fallback was matched by steam_id (vs. flag)
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
         self._linux_vm_addr     = 0   # resolved view-matrix addr (Linux; session-specific, never persisted)
+        self._last_gvars_scan   = 0.0 # monotonic time of last _linux_find_gvars_rva scan
         self._last_vm_scan      = 0.0 # monotonic time of last view-matrix .bss scan
         # On Linux these may be patched after a live memory scan; on Windows the
         # MSVC binary always uses chunk_off=0x10 and stride=120. Never let Linux-
@@ -1528,6 +1530,11 @@ class CS2Reader:
         self.entity_system = self.mem.ptr(self.client_base + dw_list)
         self.gvars         = self.mem.ptr(self.client_base + dw_gvars)
         self.lpc_addr      = self.client_base + dw_lpc
+        if IS_LINUX:
+            # dwGlobalVars is a Windows RVA; on Linux it reads unrelated bytes
+            # (logged as "global vars @ 0x0"), which left curtime at 0 and made
+            # every bomb/defuse timer an absolute game time, not a countdown.
+            self.gvars = self._linux_gvars()
 
         dw_vm = self._g.get("dwViewMatrix", 0)
         self.view_matrix_addr = (self.client_base + dw_vm) if dw_vm else 0
@@ -2698,6 +2705,94 @@ class CS2Reader:
                 mod_end = 0
         return None
 
+    def _gvars_clocks_ok(self, gv: int) -> bool:
+        """Cheap plausibility check: realtime (+0) and curtime are sane floats."""
+        if not _valid_ptr(gv):
+            return False
+        rt, ct = self.mem.f32(gv), self.mem.f32(gv + _CURTIME_OFF)
+        return all(math.isfinite(v) and 0.0 < v < 1e7 for v in (rt, ct))
+
+    def _linux_gvars(self) -> int:
+        """CGlobalVarsBase* on Linux, via a libclient-relative slot found by
+        _linux_find_gvars_rva(). The slot RVA is cached in the offsets globals
+        (module-relative, so it survives ASLR); it is re-scanned when the
+        cached one stops validating, throttled to once every 30 s."""
+        rva = self._g.get("_linux_gvars_rva", 0)
+        if rva:
+            gv = self.mem.ptr(self.client_base + rva)
+            if self._gvars_clocks_ok(gv):
+                return gv
+        now = time.monotonic()
+        if now - self._last_gvars_scan < 30.0:
+            return 0
+        self._last_gvars_scan = now
+        rva = self._linux_find_gvars_rva()
+        if not rva:
+            return 0
+        self._g["_linux_gvars_rva"] = rva
+        return self.mem.ptr(self.client_base + rva)
+
+    def _linux_find_gvars_rva(self) -> int:
+        """Locate the libclient slot that holds CGlobalVarsBase*.
+
+        Signature-free, so it survives game updates: collect every pointer
+        stored in libclient's writable segments (+ its .bss), snapshot each
+        target twice ~0.5 s apart, and keep the one whose realtime (+0) and
+        curtime (+0x30) both advanced by the wall-clock delta. On the
+        2026-10-20 build this is libclient+0x4687d38.
+        """
+        try:
+            maps = Path(f"/proc/{self.mem.pid}/maps").read_text(errors="ignore").splitlines()
+        except Exception:
+            return 0
+        regions = []
+        for line in maps:
+            parts = line.split(maxsplit=5)
+            if len(parts) >= 6 and parts[1].startswith("rw") \
+                    and _maps_basename(parts[5]) in _CLIENT_MODULE_BASENAMES:
+                lo, hi = (int(x, 16) for x in parts[0].split("-"))
+                regions.append((lo, hi))
+        bss = self._linux_module_bss(_CLIENT_MODULE_BASENAMES)
+        if bss:
+            regions.append(bss)
+
+        slots: dict[int, int] = {}   # target -> first slot address holding it
+        for lo, hi in regions:
+            raw = self.mem._read(lo, hi - lo)
+            for off in range(0, len(raw) - 7, 8):
+                v = struct.unpack_from("<Q", raw, off)[0]
+                if _valid_ptr(v) and v % 8 == 0 and v not in slots:
+                    slots[v] = lo + off
+
+        span = _CURTIME_OFF + 4
+        t0 = time.monotonic()
+        before = {v: self.mem._read(v, span) for v in slots}
+        time.sleep(0.5)
+        dt = time.monotonic() - t0
+        hits = []
+        for v, b0 in before.items():
+            if len(b0) != span:
+                continue
+            b1 = self.mem._read(v, span)
+            if len(b1) != span:
+                continue
+            ok = True
+            for o in (0, _CURTIME_OFF):
+                f0 = struct.unpack_from("<f", b0, o)[0]
+                f1 = struct.unpack_from("<f", b1, o)[0]
+                if not (0.0 < f1 < 1e7 and abs((f1 - f0) - dt) < 0.25):
+                    ok = False
+                    break
+            if ok:
+                hits.append(slots[v])
+        if len(hits) != 1:
+            log.warning("global vars scan: %d candidates in %d pointers — curtime "
+                        "unavailable, bomb timers will not count down", len(hits), len(slots))
+            return 0
+        rva = hits[0] - self.client_base
+        log.info("global vars scan: CGlobalVarsBase* at libclient+0x%X", rva)
+        return rva
+
     def _linux_resolve_view_matrix(self, pawn: int) -> int:
         """Locate the world-to-screen view matrix in libclient.so's .bss on native
         Linux by validating 16-float candidates against the local player's camera.
@@ -2849,7 +2944,11 @@ class CS2Reader:
 
         # Refresh global vars pointer for the same reason
         dw_gvars = self._g.get("dwGlobalVars", 0)
-        if dw_gvars:
+        if IS_LINUX:
+            gv = self._linux_gvars()
+            if gv:
+                self.gvars = gv
+        elif dw_gvars:
             gv = self.mem.ptr(self.client_base + dw_gvars)
             if gv:
                 self.gvars = gv
@@ -3501,7 +3600,7 @@ class CS2Reader:
                 return name
         if not self.gvars:
             return "invalid"
-        char_ptr = self.mem.ptr(self.gvars + _MAP_NAME_OFF)
+        char_ptr = self.mem.ptr(self.gvars + (_LINUX_MAP_NAME_OFF if IS_LINUX else _MAP_NAME_OFF))
         name = self.mem.cstring(char_ptr) if char_ptr else ""
         if not name or "<empty>" in name or len(name) < 3:
             return "invalid"

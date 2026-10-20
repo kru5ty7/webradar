@@ -8,15 +8,23 @@ const COLORS = {
   no_game:       "#fbbf24",
   loading:       "#fbbf24",
   menu:          "#fbbf24",
+  refreshing:    "#60a5fa",
   no_helper:     "#f87171",
   no_access:     "#f87171",
   no_players:    "#f87171",
   stale_offsets: "#f87171",
 };
 
-const StatusPill = ({ status, compact = false }) => {
+// States where re-fetching offsets is the likely fix — the button gets a label.
+const OFFSET_TROUBLE = ["stale_offsets", "no_players"];
+// No helper to talk to (or it is already refreshing) — hide the button.
+const NO_REFRESH = ["connecting", "no_helper", "refreshing"];
+
+const StatusPill = ({ status, compact = false, onRefresh }) => {
   if (!status) return null;
   const color = COLORS[status.state] || "#9ca3af";
+  const canRefresh = onRefresh && !NO_REFRESH.includes(status.state);
+  const urgent = OFFSET_TROUBLE.includes(status.state);
   return (
     <div
       title={status.detail}
@@ -37,6 +45,22 @@ const StatusPill = ({ status, compact = false }) => {
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {status.detail || status.state}
       </span>
+      {canRefresh && (
+        <button
+          onClick={onRefresh}
+          title="Re-download offsets and reattach (rate-limited to once per 30 s)"
+          style={{
+            flexShrink: 0, marginLeft: 2, cursor: "pointer",
+            border: urgent ? "1px solid rgba(248,113,113,0.6)" : "none",
+            borderRadius: 4, padding: urgent ? "0 6px" : 0,
+            background: urgent ? "rgba(248,113,113,0.15)" : "transparent",
+            color: urgent ? "#fecaca" : "rgba(255,255,255,0.5)",
+            fontSize: "inherit", lineHeight: 1.4,
+          }}
+        >
+          {urgent ? "⟳ Refresh offsets" : "⟳"}
+        </button>
+      )}
     </div>
   );
 };

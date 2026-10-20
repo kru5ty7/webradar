@@ -900,11 +900,13 @@ def _apply_linux_baseline(offsets: dict) -> int:
     return patched
 
 
-def load_offsets() -> dict:
+def load_offsets(force: bool = False) -> dict:
+    """Load offsets from the cache, or fetch + scan fresh ones. ``force`` skips
+    the cache (the webapp's "refresh offsets" button)."""
     dll_path  = _find_client_dll()
     dll_mtime = dll_path.stat().st_mtime if dll_path else 0
 
-    if CACHE_FILE.exists():
+    if CACHE_FILE.exists() and not force:
         try:
             cached   = json.loads(CACHE_FILE.read_text())
             cache_ts = cached.get("_ts", 0)
@@ -3872,6 +3874,9 @@ async def _ws_handler(websocket):
                     cfg["auto_update"] = bool(data.get("value", True))
                     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
                     log.info("auto-update -> %s", cfg["auto_update"])
+                elif data.get("type") == "refresh_offsets":
+                    if _request_offset_refresh():
+                        log.info("offset refresh requested from the webapp")
             except Exception:
                 pass
     except Exception:
@@ -3913,6 +3918,22 @@ async def _broadcast_status() -> None:
         return
     _status_last, _status_sent_at = key, now
     await _broadcast(json.dumps(_status))
+
+
+# Set by a "refresh_offsets" message from the webapp; consumed by the main loop.
+# Rate-limited because any page that can reach the socket can send it.
+_refresh_requested = False
+_last_refresh_req  = 0.0
+REFRESH_COOLDOWN_SEC = 30.0
+
+
+def _request_offset_refresh() -> bool:
+    global _refresh_requested, _last_refresh_req
+    now = time.monotonic()
+    if _refresh_requested or now - _last_refresh_req < REFRESH_COOLDOWN_SEC:
+        return False
+    _refresh_requested, _last_refresh_req = True, now
+    return True
 
 
 def _payload_status(data: dict) -> tuple[str, str]:
@@ -4338,6 +4359,7 @@ def _ensure_firewall_rules():
 
 # ── main async loop ───────────────────────────────────────────────────────────
 async def _run_async():
+    global _refresh_requested
     cfg = load_config()
     steam_id = _resolve_steam_id(cfg)
     _ensure_firewall_rules()
@@ -4433,6 +4455,25 @@ async def _run_async():
                     except Exception as exc:
                         # Keep running on the current offsets; retry next interval.
                         log.warning("offset auto-refresh failed (%s) — keeping current offsets", exc)
+
+            # ── manual refresh from the webapp ────────────────────────────────
+            if _refresh_requested:
+                _refresh_requested = False
+                _set_status("refreshing", "Refreshing offsets")
+                await _broadcast_status()
+                try:
+                    new_off = await loop.run_in_executor(None, lambda: load_offsets(force=True))
+                    offsets.clear()
+                    offsets.update(new_off)
+                    offset_dll_mtime = await loop.run_in_executor(
+                        None, lambda: _client_dll_mtime(mem.pid))
+                    reader = None            # setup() re-resolves everything
+                    _did_local_scan = False
+                    log.info("offsets refreshed on request")
+                except Exception as exc:
+                    log.warning("manual offset refresh failed (%s) — keeping current offsets", exc)
+                    _set_status("stale_offsets", f"Offset refresh failed: {exc}")
+                    await _broadcast_status()
 
             # ── detect stale handle (CS2 restarted without triggering OSError) ─
             # After several consecutive setup failures, verify the process is

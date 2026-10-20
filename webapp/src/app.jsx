@@ -72,6 +72,8 @@ let _backendWs = null;
 let _bytesThisSec = 0;
 let _kbpsSnapshot = 0;
 setInterval(() => { _kbpsSnapshot = _bytesThisSec / 1024; _bytesThisSec = 0; }, 1000);
+const refreshOffsets = () => sendToBackend({ type: "refresh_offsets" });
+
 function sendToBackend(data) {
   if (_backendWs && _backendWs.readyState === WebSocket.OPEN) {
     _backendWs.send(JSON.stringify(data));
@@ -424,7 +426,7 @@ const App = () => {
 
         {/* ── Radar ── */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {status.state !== "ok" && <StatusPill status={status} compact />}
+          {status.state !== "ok" && <StatusPill status={status} compact onRefresh={refreshOffsets} />}
           {mapData && playerArray.length > 0 ? (
             <Radar
               playerArray={playerArray}
@@ -483,7 +485,7 @@ const App = () => {
           </div>
         )}
 
-        <StatusPill status={status} />
+        <StatusPill status={status} onRefresh={refreshOffsets} />
 
         {/* Latency/settings overlay — absolutely positioned, not in flex flow */}
         <Latency

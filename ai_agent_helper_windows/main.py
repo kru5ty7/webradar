@@ -1192,15 +1192,19 @@ class CS2Reader:
         unk2 = self.mem.ptr(unk1 + self._classinfo_name2_off)
         if not unk2:
             return ""
-        # unk2 is a std::string object (or char*) in game memory.
+        # unk2 is a std::string object or a plain const char*, depending on build.
         # MSVC std::string: size at +0x10, data at ptr(+0x00) if len>=16, else inline.
         sz = self.mem.u32(unk2 + 0x10)
-        if sz == 0 or sz > 256:
-            return ""
-        if sz < 16:
-            return self.mem.cstring(unk2)
-        heap = self.mem.ptr(unk2)
-        return self.mem.cstring(heap) if heap else ""
+        if 0 < sz <= 256:
+            data = unk2 if sz < 16 else self.mem.ptr(unk2)
+            s = self.mem.cstring(data) if data else ""
+            if len(s) == sz:
+                return s
+        # Not a std::string whose length matches: on build 14191 this is a const
+        # char* into .rdata, where +0x10 is just the next bytes of the name. Only
+        # the world entity passed before, via the detection scan's own fallback.
+        s = self.mem.cstring(unk2, 64)
+        return s if 3 <= len(s) <= 63 and s.replace("_", "").isalnum() else ""
 
     # ── high-slot entity discovery ────────────────────────────────────────────
     _HI_CHUNKS = 16   # sweep entity slots 1024..8191 (chunks 2..15)

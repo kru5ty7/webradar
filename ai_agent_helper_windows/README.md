@@ -7,6 +7,22 @@ ELF scanner, live schema rescans, `chunk_scanner.so` or Linux field baseline).
 On Windows the a2x/cs2-dumper offsets match `client.dll`, so they are used
 directly. The on-disk PE signature scan patches any stale global RVAs.
 
+## First-time setup
+
+From an **administrator** PowerShell in this folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1   # no Python yet? use this
+python setup_windows.py            # or, if Python 3.10+ is already installed
+python setup_windows.py --check    # just report what is missing
+python setup_windows.py --build    # also build webapp/dist
+```
+
+It checks each item and installs only what is missing or too old, using
+winget: Python 3.10+, Node.js 18+ with npm, the WebView2 runtime (needed by the
+minimap/overlay window), the pip packages in `requirements.txt`, and the
+webapp's npm packages. Re-running it is safe.
+
 ## Run
 
 ```bat

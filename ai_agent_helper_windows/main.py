@@ -566,6 +566,20 @@ def _parse_fields(raw: dict) -> dict:
     return out
 
 
+def _game_build() -> int:
+    """Installed CS2 build, e.g. PatchVersion=1.41.9.1 -> 14191 — the same
+    number cs2-dumper publishes as build_number. 0 if steam.inf is not found."""
+    root = find_cs2_root()
+    inf = root / "game" / "csgo" / "steam.inf" if root else None
+    try:
+        for line in inf.read_text(errors="ignore").splitlines():
+            if line.startswith("PatchVersion="):
+                return int(line.split("=", 1)[1].strip().replace(".", ""))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return 0
+
+
 def load_offsets(force: bool = False) -> dict:
     """Load offsets from the cache, or fetch + scan fresh ones. ``force`` skips
     the cache (the webapp's "refresh offsets" button)."""
@@ -582,6 +596,14 @@ def load_offsets(force: bool = False) -> dict:
             cache_age = time.time() - cache_ts
             dll_found = dll_mtime > 0
             cache_ok  = (cache_ts > dll_mtime) if dll_found else (cache_age < CACHE_MAX_AGE)
+            # cs2-dumper publishes a few hours after each game update. A cache
+            # fetched in that gap holds the previous build's offsets yet is
+            # newer than client.dll, so the mtime check alone keeps it forever.
+            game_build, cache_build = _game_build(), cached.get("_build", 0)
+            if cache_ok and game_build and cache_build != game_build:
+                cache_ok = False
+                log.info("cached offsets are for build %s, game is build %d — refetching",
+                         cache_build or "unknown", game_build)
             if cache_ok:
                 reason = "client.dll unchanged" if dll_found else f"age {cache_age/3600:.1f}h < {CACHE_MAX_AGE/3600:.0f}h TTL"
                 log.info("using cached offsets (%s)", reason)
@@ -596,6 +618,15 @@ def load_offsets(force: bool = False) -> dict:
     try:
         raw_off    = _fetch(f"{DUMPER_BASE}/offsets.json")
         raw_client = _fetch(f"{DUMPER_BASE}/client_dll.json")
+        try:
+            dumper_build = int(_fetch(f"{DUMPER_BASE}/info.json").get("build_number", 0))
+        except Exception:
+            dumper_build = 0
+        game_build = _game_build()
+        if game_build and dumper_build and dumper_build < game_build:
+            log.warning("cs2-dumper is on build %d but the game is build %d — field "
+                        "offsets may be stale until it updates (re-checked every start)",
+                        dumper_build, game_build)
 
         client_globals = (
             raw_off.get("client.dll") or
@@ -604,10 +635,12 @@ def load_offsets(force: bool = False) -> dict:
 
         result = {
             "_ts":     time.time(),
+            "_build":  dumper_build,   # cs2-dumper build these offsets describe
             "globals": client_globals,
             "fields":  _parse_fields(raw_client),
         }
-        log.info("offsets fetched from cs2-dumper")
+        log.info("offsets fetched from cs2-dumper (build %s, game build %s)",
+                 dumper_build or "?", game_build or "?")
     except Exception as exc:
         log.warning("fetch failed: %s", exc)
         if CACHE_FILE.exists():
@@ -876,7 +909,9 @@ class CS2Reader:
         self._lpc_via_steam     = False  # True when _lpc_fallback was matched by steam_id (vs. flag)
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
         self._entity_chunk_off = 16   # always 0x10 on Windows
-        self._entity_stride    = 120  # MSVC CEntityIdentity is always 120 bytes
+        self._entity_stride    = 120  # default; measured in setup() (current builds: 112)
+        self._last_noplayer_check = 0.0  # monotonic time of last _no_player_check
+        self._last_noplayer_log   = 0.0
         # Class-name chain offsets — auto-detected at startup via _detect_classinfo_offsets
         self._classinfo_id_off    = _IDENTITY_CLASS_OFF    # CEntityIdentity → CSchemaClassInfo*
         self._classinfo_name1_off = _CLASSINFO_NAME1_OFF   # CSchemaClassInfo → intermediate ptr
@@ -935,8 +970,17 @@ class CS2Reader:
         log.info("entity system @ 0x%016X", self.entity_system)
         log.info("global vars   @ 0x%016X", self.gvars)
 
+        # The identity size changed across builds (120 -> 112); a wrong value
+        # still reads slot 0 (CWorld) fine and silently hides everything else.
+        chunk0 = self.mem.ptr(self.entity_system + self._entity_chunk_off)
+        if _valid_ptr(chunk0):
+            scores = self._stride_scores(chunk0)
+            self._entity_stride = self._detect_stride(chunk0, scores)
+            log.info("entity stride %d (slot-index matches per stride: %s)",
+                     self._entity_stride, scores)
+
         # Auto-detect class-name chain offsets; if they changed (CS2 update) this
-        # fixes class-name resolution on both platforms without a code update.
+        # fixes class-name resolution without a code update.
         if self.entity_system:
             self._detect_classinfo_offsets()
 
@@ -953,6 +997,160 @@ class CS2Reader:
             return 0
         return self.mem.ptr(entry_list + self._entity_stride * (idx & 0x1FF))
 
+
+    def _stride_scores(self, chunk0_abs: int) -> dict[int, int]:
+        """For each candidate CEntityIdentity size, count how many of the first
+        256 slots hold an identity whose m_Idx equals its slot number."""
+        scores = {}
+        for st in (112, 120, 128):
+            n = 0
+            for slot in range(256):
+                idobj = chunk0_abs + st * slot
+                if not _valid_ptr(self.mem.u64(idobj)):
+                    continue
+                midx = self.mem.u32(idobj + _IDENTITY_IDX_OFF)
+                if (midx & 0x7FFF) == slot and (midx >> 15) > 0:
+                    n += 1
+            scores[st] = n
+        return scores
+
+    def _detect_stride(self, chunk0_abs: int, scores: dict[int, int] | None = None) -> int:
+        """Pick the CEntityIdentity stride (bytes) that makes the most slots'
+        stored m_Idx match their slot number. Robust across CS2 builds where the
+        identity size has been 112 or 120. Keeps the current stride when the
+        evidence is too thin (main menu: only the world entity exists, and slot
+        0 matches at every stride)."""
+        scores = scores or self._stride_scores(chunk0_abs)
+        best_st = max(scores, key=lambda st: scores[st])
+        if scores[best_st] < 3 or scores[best_st] == scores.get(self._entity_stride, -1):
+            return self._entity_stride
+        return best_st
+
+    def _no_player_check(self, lpc: int) -> None:
+        """Called when the entity walk found no players although the local
+        controller has a team. Re-measures the entity stride (a wrong value
+        hides every entity but slot 0, and the build changed it 120 -> 112)
+        and, if that is not it, logs what the walk actually saw."""
+        now = time.monotonic()
+        if now - self._last_noplayer_check < 5.0:
+            return
+        self._last_noplayer_check = now
+        chunk0 = self.mem.ptr(self.entity_system + self._entity_chunk_off)
+        if not _valid_ptr(chunk0):
+            return
+        scores = self._stride_scores(chunk0)
+        st = self._detect_stride(chunk0, scores)
+        if st != self._entity_stride:
+            log.warning("no players found: entity stride %d -> %d "
+                        "(slot-index matches per stride: %s)", self._entity_stride, st, scores)
+            self._entity_stride = st
+            return
+        if now - self._last_noplayer_log < 30.0:
+            return
+        self._last_noplayer_log = now
+        log.warning("no players found — chain report follows (repeats every 30 s "
+                    "while this lasts):\n%s", self._chain_report(lpc, chunk0, scores))
+
+    def _chain_report(self, lpc: int, chunk0: int, scores: dict[int, int]) -> str:
+        """Every step from the entity list to a player's position, with raw
+        values, so one radar.log excerpt shows where the chain breaks."""
+        lines: list[str] = []
+        add = lines.append
+        cache: dict[int, int] = {}
+
+        def section(title, fn):
+            add(f"  [{title}]")
+            try:
+                fn()
+            except Exception as exc:          # a report must never kill collect()
+                add(f"    !! {type(exc).__name__}: {exc}")
+
+        def builds():
+            add(f"    offsets from cs2-dumper build {self._offsets.get('_build') or '?'}; "
+                f"installed game build {_game_build() or '?'}")
+            for cls, fld in (("CCSPlayerController", "m_hPlayerPawn"),
+                             ("CBasePlayerController", "m_steamID"),
+                             ("C_BaseEntity", "m_iTeamNum"), ("C_BaseEntity", "m_iHealth"),
+                             ("C_BaseEntity", "m_pGameSceneNode"),
+                             ("CGameSceneNode", "m_vecAbsOrigin")):
+                add(f"    {cls}.{fld} = {self._off(cls, fld)}")
+
+        def entity_list():
+            add(f"    entity_system=0x{self.entity_system:X} chunk_off={self._entity_chunk_off} "
+                f"chunk0=0x{chunk0:X} (16-byte aligned: {chunk0 % 16 == 0}) "
+                f"stride in use={self._entity_stride}")
+            add(f"    slot-index matches per stride: {scores}")
+            for d in (-8, 8):    # catches an array base that is off by one pointer
+                add(f"    ...with chunk0 {d:+d}: {self._stride_scores(chunk0 + d)}")
+            nonnull = sum(1 for c in range(1, 32)
+                          if _valid_ptr(self.mem.ptr(self.entity_system + 8 * c + self._entity_chunk_off)))
+            add(f"    non-null chunk pointers 1..31: {nonnull}")
+
+        def first_slots():
+            st = self._entity_stride
+            for slot in range(8):
+                entry = chunk0 + st * slot
+                inst  = self.mem.ptr(entry)
+                midx  = self.mem.u32(entry + _IDENTITY_IDX_OFF)
+                cls   = self._class_name(inst) if inst else ""
+                add(f"    slot {slot}: entry=0x{entry:X} inst=0x{inst:X} m_Idx=0x{midx:08X} "
+                    f"(idx={midx & 0x7FFF}, serial={midx >> 15}) class={cls or '-'}")
+
+        def classinfo():
+            mode = ("designer-name" if self._use_designer_name else
+                    "char*" if self._classinfo_charptr_mode else "std::string")
+            add(f"    mode={mode} id_off=0x{self._classinfo_id_off:X} "
+                f"name1=0x{self._classinfo_name1_off:X} name2=0x{self._classinfo_name2_off:X} "
+                f"available={self._classnames_available}")
+            names: dict[str, int] = {}
+            n = 0
+            for idx in range(1024):
+                ent = self._entity_ptr(idx, cache)
+                if ent:
+                    n += 1
+                    c = self._class_name(ent) or "<no name>"
+                    names[c] = names.get(c, 0) + 1
+            top = sorted(names.items(), key=lambda kv: -kv[1])[:12]
+            add(f"    {n} entities in slots 0-1023; classes: "
+                + (" | ".join(f"{c}={k}" for c, k in top) or "none"))
+
+        def local_chain():
+            off_steam = self._off("CBasePlayerController", "m_steamID")
+            off_team  = self._off("C_BaseEntity", "m_iTeamNum")
+            off_hp    = self._off("CCSPlayerController", "m_hPlayerPawn")
+            off_hpold = self._off("CBasePlayerController", "m_hPawn")
+            off_hlth  = self._off("C_BaseEntity", "m_iHealth")
+            add(f"    lpc=0x{lpc:X} (from dwLocalPlayerController @0x{self.lpc_addr:X}: "
+                f"0x{self.mem.ptr(self.lpc_addr):X}) class={self._class_name(lpc) or '-'}")
+            add(f"    steamID read={self.mem.u64(lpc + off_steam) if off_steam else '?'} "
+                f"config={sorted(self.steam_ids) or 'none'}")
+            add(f"    team byte={self.mem.u32(lpc + off_team) & 0xFF if off_team else '?'}")
+            h = self.mem.u32(lpc + off_hp) if off_hp else 0
+            h_old = self.mem.u32(lpc + off_hpold) if off_hpold else 0
+            add(f"    m_hPlayerPawn=0x{h:08X} (idx {h & ENT_ENTRY_MASK})  m_hPawn=0x{h_old:08X}")
+            pawn = self._entity_by_handle(h, cache)
+            add(f"    pawn=0x{pawn:X} class={self._class_name(pawn) if pawn else '-'}")
+            if pawn:
+                node = self.mem.ptr(pawn + self._off("C_BaseEntity", "m_pGameSceneNode"))
+                add(f"    pawn team={self.mem.u32(pawn + off_team) & 0xFF if off_team else '?'} "
+                    f"health={self.mem.i32(pawn + off_hlth) if off_hlth else '?'} "
+                    f"scene_node=0x{node:X} origin={tuple(round(v, 1) for v in self._origin(pawn))}")
+
+        def controller_slots():
+            st, hits = self._entity_stride, []
+            for slot in range(1, 65):
+                inst = self.mem.ptr(chunk0 + st * slot)
+                if inst:
+                    hits.append(f"{slot}:{self._class_name(inst) or '?'}")
+            add(f"    slots 1-64 with an entity: {len(hits)}  " + " ".join(hits[:12]))
+
+        section("offsets", builds)
+        section("entity list", entity_list)
+        section("first slots", first_slots)
+        section("class names", classinfo)
+        section("local controller -> pawn", local_chain)
+        section("controller slots", controller_slots)
+        return "\n".join(lines)
 
     def _entity_by_handle(self, handle: int, chunk_cache: dict) -> int:
         # A zero handle is unset, not "entity 0". Without this it resolves to
@@ -994,15 +1192,19 @@ class CS2Reader:
         unk2 = self.mem.ptr(unk1 + self._classinfo_name2_off)
         if not unk2:
             return ""
-        # unk2 is a std::string object (or char*) in game memory.
+        # unk2 is a std::string object or a plain const char*, depending on build.
         # MSVC std::string: size at +0x10, data at ptr(+0x00) if len>=16, else inline.
         sz = self.mem.u32(unk2 + 0x10)
-        if sz == 0 or sz > 256:
-            return ""
-        if sz < 16:
-            return self.mem.cstring(unk2)
-        heap = self.mem.ptr(unk2)
-        return self.mem.cstring(heap) if heap else ""
+        if 0 < sz <= 256:
+            data = unk2 if sz < 16 else self.mem.ptr(unk2)
+            s = self.mem.cstring(data) if data else ""
+            if len(s) == sz:
+                return s
+        # Not a std::string whose length matches: on build 14191 this is a const
+        # char* into .rdata, where +0x10 is just the next bytes of the name. Only
+        # the world entity passed before, via the detection scan's own fallback.
+        s = self.mem.cstring(unk2, 64)
+        return s if 3 <= len(s) <= 63 and s.replace("_", "").isalnum() else ""
 
     # ── high-slot entity discovery ────────────────────────────────────────────
     _HI_CHUNKS = 16   # sweep entity slots 1024..8191 (chunks 2..15)
@@ -1920,6 +2122,9 @@ class CS2Reader:
                 except Exception as e:
                     log.warning("dwWeaponC4 global fallback failed: %s", e)
 
+        if not players:
+            self._no_player_check(lpc)
+
         # The C4 sits at a higher entity slot than every player, so the carrier
         # is only known once the whole walk (and the fallbacks) have run.
         self._bomb_own_idx = carrier_idx
@@ -2254,7 +2459,9 @@ def _payload_status(data: dict) -> tuple[str, str]:
     """Judge a successful collect(): did the offsets produce plausible players?"""
     players = data.get("m_players") or []
     if not players:
-        return "no_players", "In a match but no players were found (offsets may be stale)"
+        # Not necessarily offsets: the stride or class-name lookup can cause it
+        # too. radar.log has a step-by-step chain report for exactly this.
+        return "no_players", "In a match but no players found (see chain report in radar.log)"
     if all(not (p["m_position"]["x"] or p["m_position"]["y"]) for p in players):
         return "stale_offsets", (f"{len(players)} players found but all at (0, 0) "
                                  "(offsets may be stale)")

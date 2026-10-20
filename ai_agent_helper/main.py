@@ -1335,6 +1335,8 @@ class CS2Reader:
         self._last_lpc_scan     = 0.0 # monotonic time of last _find_lpc_fallback scan
         self._linux_vm_addr     = 0   # resolved view-matrix addr (Linux; session-specific, never persisted)
         self._last_gvars_scan   = 0.0 # monotonic time of last _linux_find_gvars_rva scan
+        self._last_noplayer_check = 0.0  # monotonic time of last _no_player_check
+        self._last_noplayer_log   = 0.0
         self._last_vm_scan      = 0.0 # monotonic time of last view-matrix .bss scan
         # On Linux these may be patched after a live memory scan; on Windows the
         # MSVC binary always uses chunk_off=0x10 and stride=120. Never let Linux-
@@ -1344,7 +1346,7 @@ class CS2Reader:
             self._entity_stride    = int(self._g.get("_linux_entity_stride", 120))
         else:
             self._entity_chunk_off = 16   # always 0x10 on Windows
-            self._entity_stride    = 120  # MSVC CEntityIdentity is always 120 bytes
+            self._entity_stride    = 120  # default; measured in setup() (current builds: 112)
         self._last_es_scan      = 0.0 # monotonic time of last _linux_scan_entity_system call
         # NEVER seed this from the on-disk cache: it is an absolute (ASLR-randomized)
         # runtime address, only valid within the CS2 process that produced it. A value
@@ -1465,10 +1467,12 @@ class CS2Reader:
         return len(found)
 
     def _linux_detect_stride(self, chunk0_abs: int) -> int:
-        """Pick the CEntityIdentity stride (bytes) that makes the most slots'
-        stored m_Idx match their slot number. Robust across CS2 builds where the
-        identity size has been 112 or 120."""
-        best_st, best_n = self._entity_stride, -1
+        return self._detect_stride(chunk0_abs)
+
+    def _stride_scores(self, chunk0_abs: int) -> dict[int, int]:
+        """For each candidate CEntityIdentity size, count how many of the first
+        256 slots hold an identity whose m_Idx equals its slot number."""
+        scores = {}
         for st in (112, 120, 128):
             n = 0
             for slot in range(256):
@@ -1478,9 +1482,59 @@ class CS2Reader:
                 midx = self.mem.u32(idobj + _IDENTITY_IDX_OFF)
                 if (midx & 0x7FFF) == slot and (midx >> 15) > 0:
                     n += 1
-            if n > best_n:
-                best_n, best_st = n, st
+            scores[st] = n
+        return scores
+
+    def _detect_stride(self, chunk0_abs: int, scores: dict[int, int] | None = None) -> int:
+        """Pick the CEntityIdentity stride (bytes) that makes the most slots'
+        stored m_Idx match their slot number. Robust across CS2 builds where the
+        identity size has been 112 or 120. Keeps the current stride when the
+        evidence is too thin (main menu: only the world entity exists, and slot
+        0 matches at every stride)."""
+        scores = scores or self._stride_scores(chunk0_abs)
+        best_st = max(scores, key=lambda st: scores[st])
+        if scores[best_st] < 3 or scores[best_st] == scores.get(self._entity_stride, -1):
+            return self._entity_stride
         return best_st
+
+    def _no_player_check(self) -> None:
+        """Called when the entity walk found no players although the local
+        controller has a team. Re-measures the entity stride (a wrong value
+        hides every entity but slot 0, and the build changed it 120 -> 112)
+        and, if that is not it, logs what the walk actually saw."""
+        if IS_LINUX:
+            return   # Linux resolves chunk 0 and the stride in setup()/collect()
+        now = time.monotonic()
+        if now - self._last_noplayer_check < 5.0:
+            return
+        self._last_noplayer_check = now
+        chunk0 = self.mem.ptr(self.entity_system + self._entity_chunk_off)
+        if not _valid_ptr(chunk0):
+            return
+        scores = self._stride_scores(chunk0)
+        st = self._detect_stride(chunk0, scores)
+        if st != self._entity_stride:
+            log.warning("no players found: entity stride %d -> %d "
+                        "(slot-index matches per stride: %s)", self._entity_stride, st, scores)
+            self._entity_stride = st
+            return
+        if now - self._last_noplayer_log < 30.0:
+            return
+        self._last_noplayer_log = now
+        cache: dict[int, int] = {}
+        names: dict[str, int] = {}
+        n = 0
+        for idx in range(1024):
+            ent = self._entity_ptr(idx, cache)
+            if not ent:
+                continue
+            n += 1
+            cls = self._class_name(ent) or "<no name>"
+            names[cls] = names.get(cls, 0) + 1
+        top = sorted(names.items(), key=lambda kv: -kv[1])[:10]
+        log.warning("no players found: stride=%d matches=%s; %d entities in slots "
+                    "0-1023; classes: %s", self._entity_stride, scores, n,
+                    " | ".join(f"{c}={k}" for c, k in top) or "none")
 
     def _world_entity_ok(self, chunk0_abs: int) -> bool:
         """True if chunk-0's slot-0 identity is the world entity (serial >= 1)."""
@@ -1644,6 +1698,16 @@ class CS2Reader:
         log.info("client.dll    @ 0x%016X", self.client_base)
         log.info("entity system @ 0x%016X", self.entity_system)
         log.info("global vars   @ 0x%016X", self.gvars)
+
+        # Windows: the identity size changed across builds (120 -> 112); a wrong
+        # value still reads slot 0 (CWorld) fine and silently hides everything else.
+        if not IS_LINUX and self.entity_system:
+            chunk0 = self.mem.ptr(self.entity_system + self._entity_chunk_off)
+            if _valid_ptr(chunk0):
+                scores = self._stride_scores(chunk0)
+                self._entity_stride = self._detect_stride(chunk0, scores)
+                log.info("entity stride %d (slot-index matches per stride: %s)",
+                         self._entity_stride, scores)
 
         # Auto-detect class-name chain offsets; if they changed (CS2 update) this
         # fixes class-name resolution on both platforms without a code update.
@@ -3513,6 +3577,9 @@ class CS2Reader:
 
                 except Exception as e:
                     log.warning("dwWeaponC4 global fallback failed: %s", e)
+
+        if not players:
+            self._no_player_check()
 
         # The C4 sits at a higher entity slot than every player, so the carrier
         # is only known once the whole walk (and the fallbacks) have run.

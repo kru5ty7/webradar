@@ -43,7 +43,7 @@ if not defined MODE (
 
 echo.
 echo [1/2] Starting frontend dev server...
-start "CS2Radar Frontend" cmd /c "cd /d "%~dp0\..\webapp" && npm run dev"
+start "CS2Radar Frontend" cmd /c "cd /d "%~dp0\..\..\webapp" && npm run dev"
 
 echo [2/2] Starting backend (mode: %MODE%)...
 timeout /t 2 /nobreak >nul

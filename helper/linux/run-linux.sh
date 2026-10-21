@@ -4,7 +4,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEBAPP_DIR="$DIR/../webapp"
+WEBAPP_DIR="$DIR/../../webapp"
 PYTHON="${PYTHON:-python3}"
 MODE="${1:---normal}"
 

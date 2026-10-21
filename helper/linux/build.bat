@@ -2,7 +2,7 @@
 setlocal
 
 echo [1/3] Building frontend...
-cd /d "%~dp0\..\webapp"
+cd /d "%~dp0\..\..\webapp"
 call npm run build
 if errorlevel 1 ( echo Frontend build FAILED & pause & exit /b 1 )
 

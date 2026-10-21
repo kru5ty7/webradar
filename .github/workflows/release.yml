@@ -35,17 +35,17 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          "VERSION = `"$env:TAG`"" | Out-File -FilePath ai_agent_helper_windows/version.py -Encoding utf8NoBOM
+          "VERSION = `"$env:TAG`"" | Out-File -FilePath helper/windows/version.py -Encoding utf8NoBOM
 
       # The Windows exe comes from the Windows-only fork, which carries the
-      # Windows fixes; the Linux binary below still builds from ai_agent_helper.
+      # Windows fixes; the Linux binary below still builds from helper/linux.
       - name: Build exe
-        run: cd ai_agent_helper_windows && pyinstaller radar.spec --noconfirm
+        run: cd helper/windows && pyinstaller radar.spec --noconfirm
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-binary
-          path: ai_agent_helper_windows/dist/cs2-webradar.exe
+          path: helper/windows/dist/cs2-webradar.exe
           if-no-files-found: error
 
   build-linux:
@@ -83,15 +83,15 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          echo "VERSION = \"$TAG\"" > ai_agent_helper/version.py
+          echo "VERSION = \"$TAG\"" > helper/linux/version.py
 
       - name: Build binary
-        run: cd ai_agent_helper && pyinstaller radar.spec --noconfirm
+        run: cd helper/linux && pyinstaller radar.spec --noconfirm
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-binary
-          path: ai_agent_helper/dist/cs2-radar-linux
+          path: helper/linux/dist/cs2-radar-linux
           if-no-files-found: error
 
   release:

@@ -1,6 +1,6 @@
-# ai_agent_helper_windows
+# helper/windows
 
-Windows-only fork of `../ai_agent_helper`. It has the same radar payload and
+Windows-only fork of `../linux`. It has the same radar payload and
 webapp contract, with every native-Linux code path removed (no `/proc` reads,
 ELF scanner, live schema rescans, `chunk_scanner.so` or Linux field baseline).
 
@@ -38,7 +38,7 @@ python main.py --normal
 build.bat          :: -> dist\cs2-webradar.exe (copy config.json next to it)
 ```
 
-## Differences from ai_agent_helper
+## Differences from helper/linux
 
 - Exits straight away on a non-Windows host.
 - `auto_update` is off by default. GitHub releases ship the cross-platform

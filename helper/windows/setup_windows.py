@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 HERE         = Path(__file__).resolve().parent
-WEBAPP       = HERE.parent / "webapp"
+WEBAPP       = HERE.parents[1] / "webapp"
 REQUIREMENTS = HERE / "requirements.txt"
 
 MIN_PYTHON = (3, 10)   # main.py uses `X | None` annotations at runtime

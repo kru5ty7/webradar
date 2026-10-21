@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 CS2 WebRadar is a browser-based radar for Counter-Strike 2. It has two components:
-1. **ai_agent_helper** — a Python process that reads game memory (Windows and native Linux) and streams JSON over WebSocket. `ai_agent_helper_windows/` is a Windows-only fork of it.
+1. **helper/** — a Python process that reads game memory and streams JSON over WebSocket. `helper/linux/` runs on Linux and Windows; `helper/windows/` is a Windows-only fork of it (own fixes, built into the release exe).
 2. **webapp** — a React/Vite frontend that receives and renders that JSON on a radar map
 
 ## Architecture
@@ -14,7 +14,7 @@ CS2 WebRadar is a browser-based radar for Counter-Strike 2. It has two component
 
 ```
 CS2 process (game memory)
-    → ai_agent_helper/main.py (Python memory reader, 10Hz polling)
+    → helper/linux|windows/main.py (Python memory reader, 10Hz polling)
         → WebSocket server on ws://HOST:22006/cs2_webradar
             → browser WebSocket clients
                 → React components
@@ -58,9 +58,9 @@ Entry: `webapp/src/app.jsx`
 
 Settings are persisted to `localStorage` under key `radarSettings` and merged over `DEFAULT_SETTINGS` in `app.jsx`. Notable ones: PLAYERS group (`showAllies`, `showAllyNames`, `showEnemyNames`), utility display (`showUtilCircle`/`Name`/`Emoji`), `zoom` (1–4) and `followMe` (centre the local player). Ally/enemy colour is measured against `getLocalTeam()` (the local player's own team) so a team switch can't invert it. `set_auto_update` is sent to the helper only when `autoUpdate` changes. Settings UI exists twice: `SettingsButton.jsx` (browser) and the popup in `app.jsx` (minimap) — keep them in step.
 
-## ai_agent_helper (Python memory reader)
+## helper (Python memory reader)
 
-`ai_agent_helper/` is pure Python — no Visual Studio required.
+`helper/linux/` and `helper/windows/` are pure Python — no Visual Studio required.
 
 **How it works:**
 1. On first run it fetches current offsets from [a2x/cs2-dumper](https://github.com/a2x/cs2-dumper) and caches them in `offsets_cache.json`. The cache stays valid while `client.dll` is older than it; only if the DLL can't be found does a 1-hour TTL apply. The Windows fork also invalidates the cache when the game build changes.
@@ -69,7 +69,7 @@ Settings are persisted to `localStorage` under key `radarSettings` and merged ov
 
 **Run:**
 ```bat
-cd ai_agent_helper
+cd helper/windows   # or helper/linux
 run.bat          # installs deps if needed, then starts
 # or manually:
 pip install -r requirements.txt
@@ -96,8 +96,8 @@ npm run lint         # ESLint
 npm run preview      # serve the production build
 ```
 
-### ai_agent_helper
-Windows: `run.bat` (as administrator). Linux: `run-linux.sh` (own `.venv`, Vite only for the frontend, backend under `sudo` because it reads `/proc/<pid>/mem`) or `run.sh` (no sudo). Releases are built by `.github/workflows/release.yml` on `v*` tag pushes. First-time Windows setup: `ai_agent_helper_windows/setup_windows.py`.
+### helper
+Windows (`helper/windows`): `run.bat` (as administrator). Linux (`helper/linux`): `run-linux.sh` (own `.venv`, Vite only for the frontend, backend under `sudo` because it reads `/proc/<pid>/mem`) or `run.sh` (no sudo). Releases are built by `.github/workflows/release.yml` on `v*` tag pushes. First-time Windows setup: `helper/windows/setup_windows.py`.
 
 ## Configuration
 
@@ -105,7 +105,7 @@ Windows: `run.bat` (as administrator). Linux: `run-linux.sh` (own `.venv`, Vite 
 
 | File | Setting |
 |------|---------|
-| `ai_agent_helper/config.json` | `m_use_localhost: true/false` |
+| `helper/<linux|windows>/config.json` | `m_use_localhost: true/false` |
 | `webapp/src/app.jsx` line ~12 | `const USE_LOCALHOST = 1/0` |
 
 **ngrok**: Set `VITE_WS_URL=wss://<tunnel>.ngrok-free.app/cs2_webradar` in a `.env` file before running `npm run dev`.

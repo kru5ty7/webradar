@@ -71,8 +71,11 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
         zIndex: `${(playerData.m_is_dead && `0`) || `1`}`,
       }}
     >
-      {/* Enemy name above the dot — outside masked/rotating container */}
-      {(settings.showEnemyNames ?? true) && !isAlly && (
+      {/* Name above the dot — outside masked/rotating container. Enemies and
+          teammates have separate toggles; your own dot never gets a label. */}
+      {(isAlly
+        ? !playerData.m_is_local && (settings.showAllyNames ?? false)
+        : (settings.showEnemyNames ?? true)) && (
         <div className="absolute bottom-full left-1/2 -translate-x-1/2 -translate-y-1 text-center" style={{ whiteSpace: "nowrap", zIndex: 10 }}>
           <span className="text-xs text-white" style={{ textShadow: "0 0 3px #000, 0 0 3px #000" }}>
             {playerData.m_name}

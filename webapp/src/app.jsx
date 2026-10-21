@@ -43,6 +43,7 @@ const DEFAULT_SETTINGS = {
   bombSize: 0.5,
   showAllies: true,
   showEnemyNames: true,
+  showAllyNames: false,
   showViewCones: false,
   showSmoke: true,
   showMolly: true,
@@ -157,8 +158,12 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       ))}
 
       {/* Toggles */}
-      <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
-      <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
+      <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 9, letterSpacing: "0.08em", padding: "4px 0 0" }}>PLAYERS</div>
+      <div style={{ marginLeft: 8, paddingLeft: 6, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+        <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
+        <SettingRow label="Ally Names"  checked={!!(settings.showAllyNames ?? false)} onToggle={() => toggle("showAllyNames")} />
+        <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
+      </div>
       <SettingRow label="View Cones"  checked={!!settings.showViewCones}  onToggle={() => toggle("showViewCones")} />
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />
       <SettingRow label="Molotov"     checked={!!settings.showMolly}      onToggle={() => toggle("showMolly")} />

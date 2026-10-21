@@ -100,8 +100,12 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
 
             {/* Toggles */}
             <div className="space-y-1">
-              <Toggle label="Show Allies"      checked={!!(settings.showAllies ?? true)}        onToggle={() => toggle("showAllies")} />
-              <Toggle label="Enemy Names"      checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
+              <div className="ml-4 pl-2 border-l border-radar-secondary/20">
+                <div className="text-radar-secondary/50 text-[10px] tracking-widest px-3 pt-1">PLAYERS</div>
+                <Toggle label="Show Allies"    checked={!!(settings.showAllies ?? true)}        onToggle={() => toggle("showAllies")} />
+                <Toggle label="Ally Names"     checked={!!(settings.showAllyNames ?? false)}    onToggle={() => toggle("showAllyNames")} />
+                <Toggle label="Enemy Names"    checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
+              </div>
               <Toggle label="View Cones"       checked={!!settings.showViewCones}               onToggle={() => toggle("showViewCones")} />
               <Toggle label="💨 Smoke"         checked={!!settings.showSmoke}                  onToggle={() => toggle("showSmoke")} />
               <Toggle label="🔥 Molly"         checked={!!settings.showMolly}                  onToggle={() => toggle("showMolly")} />

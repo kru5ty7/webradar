@@ -3811,8 +3811,76 @@ def _latest_release_via_web(asset_name: str) -> dict | None:
     }]}
 
 
+def _cleanup_update_leftovers() -> None:
+    """Remove files a previous self-update left next to the exe (best effort)."""
+    if not getattr(sys, "frozen", False):
+        return
+    exe = Path(sys.executable)
+    for p in [exe.with_name(exe.name + ".old"), exe.with_name("_update.bat"), exe.with_name("_update.sh"),
+              *exe.parent.glob("_update_new*")]:
+        try:
+            p.unlink()
+            log.info("update: removed leftover %s", p.name)
+        except OSError:
+            pass
+
+
+def _restart_into(new_path: Path, exe_path: Path) -> None:
+    """Swap the downloaded binary into place and start it; returns only on failure.
+
+    Why not a helper script, as before: this runs in a daemon thread, where
+    sys.exit() only ends the thread, so the old process kept running with its
+    exe locked, the script's `move` failed silently and the old version was
+    started again (leaving _update_new behind). Also, a PyInstaller onefile
+    child that inherits its parent's _PYI*/_MEIPASS2 variables reuses the
+    parent's unpacked (old) code, so the environment is reset for the child.
+    """
+    import subprocess
+    old_path = exe_path.with_name(exe_path.name + ".old")
+    try:
+        if IS_WINDOWS:
+            # A running exe can be renamed but not overwritten or deleted.
+            try:
+                old_path.unlink()
+            except FileNotFoundError:
+                pass
+            exe_path.rename(old_path)
+            try:
+                new_path.rename(exe_path)
+            except Exception:
+                old_path.rename(exe_path)   # put the original back
+                raise
+        else:
+            os.chmod(new_path, 0o755)
+            os.replace(new_path, exe_path)   # atomic; the running copy keeps its old inode
+    except Exception as exc:
+        log.warning("update: could not swap in %s (%s) - staying on the current version", new_path.name, exc)
+        try:
+            new_path.unlink()
+        except OSError:
+            pass
+        return
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI") and k != "_MEIPASS2"}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    if IS_WINDOWS:
+        kw = {"creationflags": subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        kw = {"start_new_session": True, "stdin": subprocess.DEVNULL,
+              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    subprocess.Popen([str(exe_path), *sys.argv[1:]], env=env, close_fds=True, **kw)
+    log.info("update: started %s, exiting", exe_path.name)
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    os._exit(0)   # not sys.exit(): this is a worker thread
+
+
 def _check_for_update(config: dict) -> None:
     """On startup: check GitHub for a newer release and self-update if auto_update is on."""
+    _cleanup_update_leftovers()
     if not config.get("auto_update", True):
         log.info("auto-update disabled")
         return
@@ -3921,37 +3989,7 @@ def _check_for_update(config: dict) -> None:
         return
 
     print(f"  Restarting to apply {latest_tag}...\n")
-    import subprocess
-    if IS_WINDOWS:
-        bat = exe_path.parent / "_update.bat"
-        bat.write_text(
-            "@echo off\n"
-            "timeout /t 2 /nobreak >nul\n"
-            f'move /y "{new_path}" "{exe_path}" >nul\n'
-            f'start "" "{exe_path}"\n'
-            "del \"%~f0\"\n",
-            encoding="utf-8",
-        )
-        subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW)
-    elif IS_LINUX:
-        import shlex
-
-        sh = exe_path.parent / "_update.sh"
-        sh.write_text(
-            "#!/bin/sh\n"
-            "sleep 2\n"
-            f"mv -f {shlex.quote(str(new_path))} {shlex.quote(str(exe_path))}\n"
-            f"chmod +x {shlex.quote(str(exe_path))}\n"
-            f"{shlex.quote(str(exe_path))} >/dev/null 2>&1 &\n"
-            "rm -- \"$0\"\n",
-            encoding="utf-8",
-        )
-        sh.chmod(sh.stat().st_mode | 0o755)
-        subprocess.Popen(["/bin/sh", str(sh)], start_new_session=True)
-    else:
-        log.warning("update: restart script unsupported on %s", sys.platform)
-        return
-    sys.exit(0)
+    _restart_into(new_path, exe_path)
 
 
 # ── connected browser clients ─────────────────────────────────────────────────

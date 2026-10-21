@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
   zoom: 1,                // 1 = whole map
   followMe: false,        // keep the local player centred (needs zoom > 1)
   bombColor: "#ff4500",
+  smokeColor: "#2c3138",  // smoke ring + (see-through) fill
   bombHighlight: true,
   showDeathCross: true,
   showDropped: true,
@@ -112,6 +113,7 @@ const SettingRow = ({ label, checked, onToggle }) => (
 );
 
 const BOMB_PRESETS = ["#ff4500","#ffdd00","#ffffff","#00cfff","#c90b0b"];
+const SMOKE_PRESETS = ["#2c3138","#5c636c","#9aa3ad","#e5e7eb","#00cfff"];
 
 const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
   const toggle = (key) => setSettings(s => ({ ...s, [key]: !s[key] }));
@@ -180,6 +182,22 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       <SettingRow label="Bomb Pulse"     checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />
       <SettingRow label="Dropped Weapons" checked={!!(settings.showDropped ?? true)} onToggle={() => toggle("showDropped")} />
       <SettingRow label="Auto Update"    checked={!!(settings.autoUpdate ?? true)} onToggle={() => toggle("autoUpdate")} />
+
+      {/* Smoke color */}
+      <div style={{ marginTop:8 }}>
+        <span style={{ color:"#8ab", fontSize:12, display:"block", marginBottom:6 }}>Smoke Color</span>
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+          {SMOKE_PRESETS.map(c => (
+            <div key={c} onClick={() => setVal("smokeColor", c)}
+              style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
+                border: (settings.smokeColor ?? "#2c3138")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
+          ))}
+          <input type="color" defaultValue={settings.smokeColor ?? "#2c3138"}
+            onInput={e => setVal("smokeColor", e.target.value)}
+            style={{ width:20, height:20, padding:0, border:"none", borderRadius:"50%",
+              cursor:"pointer", background:"none" }} />
+        </div>
+      </div>
 
       {/* Bomb color */}
       <div style={{ marginTop:8 }}>

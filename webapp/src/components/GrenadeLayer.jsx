@@ -68,6 +68,15 @@ const CFG = {
 // Same icons as the Smoke / Molly / Flash toggles in the settings panels
 const EMOJI = { smoke: "💨", molly: "🔥", flash: "⚡", he: "💥", decoy: "🔊" };
 
+// Smoke ring + fill come from one user-chosen colour (settings.smokeColor): the
+// ring is solid, the inside stays see-through so dots under the smoke show.
+const SMOKE_DEFAULT = "#2c3138";
+const hexToRgba = (hex, alpha) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  const n = parseInt((m ? m[1] : SMOKE_DEFAULT.slice(1)), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+};
+
 // Badge text for a grenade, from the "Utility display" options:
 // name only ("SMK"), emoji only ("💨"), both ("💨 SMK") or nothing ("").
 const badgeText = (type, cfg, showName, showEmoji) =>
@@ -274,8 +283,8 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 width:        smokeDiam,
                 height:       smokeDiam,
                 borderRadius: "50%",
-                background:   cfg.areaBg,
-                border:       `2.5px solid ${cfg.areaBorder}`,
+                background:   hexToRgba(settings?.smokeColor, 0.32),
+                border:       `2.5px solid ${hexToRgba(settings?.smokeColor, 1)}`,
                 animation:    cfg.areaAnim,
                 left: "50%", top: "50%",
               }} />}

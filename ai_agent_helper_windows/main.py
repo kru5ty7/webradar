@@ -2831,10 +2831,19 @@ def _start_http(static_dir: str, maps_cache: Path):
                 log.warning("ws proxy: backend connect failed: %s", e)
                 return
             # Send a proper WebSocket upgrade to the backend
+            # Pass the original Host and any proxy headers on: the backend decides
+            # "is this client local?" from them, so they must not be rewritten.
+            fwd = "".join(
+                f"{h}: {self.headers[h].replace(chr(13), '').replace(chr(10), '')}\r\n"
+                for h in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP",
+                          "CF-Connecting-IP", "Tailscale-User-Login", "Tailscale-User-Name")
+                if self.headers.get(h))
+            orig_host = (self.headers.get("Host") or f"localhost:{WS_PORT}").replace("\r", "").replace("\n", "")
             backend.sendall((
                 f"GET /cs2_webradar HTTP/1.1\r\n"
-                f"Host: localhost:{WS_PORT}\r\n"
+                f"Host: {orig_host}\r\n"
                 f"X-Radar-Peer: {self.client_address[0]}\r\n"
+                f"{fwd}"
                 f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
                 f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
             ).encode())

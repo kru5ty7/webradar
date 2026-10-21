@@ -17,7 +17,7 @@ const CFG = {
     text:       "#e8eef2",
     // Dark grey ring, mostly see-through inside so dots under the smoke stay visible.
     areaBg:     "rgba(70, 76, 84, 0.32)",
-    areaBorder: "rgba(92, 99, 108, 0.95)",
+    areaBorder: "rgba(44, 49, 56, 1.00)",
     areaAnim:   "grenadeSmokePulse 3s ease-in-out infinite",
     dotColor:   "rgba(190,200,210,0.95)",
   },

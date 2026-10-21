@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS = {
   followMe: false,        // keep the local player centred (needs zoom > 1)
   bombColor: "#ff4500",
   smokeColor: "#2c3138",  // smoke ring + (see-through) fill
+  mollyColor: "#ff6a00",  // molly flames + range circle
   bombHighlight: true,
   showDeathCross: true,
   showDropped: true,
@@ -114,6 +115,7 @@ const SettingRow = ({ label, checked, onToggle }) => (
 
 const BOMB_PRESETS = ["#ff4500","#ffdd00","#ffffff","#00cfff","#c90b0b"];
 const SMOKE_PRESETS = ["#2c3138","#5c636c","#9aa3ad","#e5e7eb","#00cfff"];
+const MOLLY_PRESETS = ["#ff6a00","#ffb000","#ff2d2d","#ff3df0","#a3ff00"];
 
 const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
   const toggle = (key) => setSettings(s => ({ ...s, [key]: !s[key] }));
@@ -194,6 +196,22 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
           ))}
           <input type="color" defaultValue={settings.smokeColor ?? "#2c3138"}
             onInput={e => setVal("smokeColor", e.target.value)}
+            style={{ width:20, height:20, padding:0, border:"none", borderRadius:"50%",
+              cursor:"pointer", background:"none" }} />
+        </div>
+      </div>
+
+      {/* Molly color */}
+      <div style={{ marginTop:8 }}>
+        <span style={{ color:"#8ab", fontSize:12, display:"block", marginBottom:6 }}>Molly Color</span>
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+          {MOLLY_PRESETS.map(c => (
+            <div key={c} onClick={() => setVal("mollyColor", c)}
+              style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
+                border: (settings.mollyColor ?? "#ff6a00")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
+          ))}
+          <input type="color" defaultValue={settings.mollyColor ?? "#ff6a00"}
+            onInput={e => setVal("mollyColor", e.target.value)}
             style={{ width:20, height:20, padding:0, border:"none", borderRadius:"50%",
               cursor:"pointer", background:"none" }} />
         </div>

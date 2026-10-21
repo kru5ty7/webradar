@@ -3778,6 +3778,39 @@ def _resolve_steam_id(cfg: dict) -> frozenset:
     return frozenset()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _ver_key(tag: str) -> tuple:
+    """"v19.10" -> (19, 10); compares numerically so v19.10 > v19.9."""
+    return tuple(int(n) for n in re.findall(r"\d+", tag or ""))
+
+
+def _latest_release_via_web(asset_name: str) -> dict | None:
+    """Fallback when the GitHub API says "rate limit exceeded" (60 requests/hour
+    per IP without a token). github.com/<repo>/releases/latest redirects to the
+    newest tag page and is not rate limited, and release assets have a fixed URL."""
+    import urllib.error
+    req = urllib.request.Request(f"https://github.com/{GITHUB_REPO}/releases/latest",
+                                 headers={"User-Agent": "cs2-radar/updater"})
+    try:
+        urllib.request.build_opener(_NoRedirect).open(req, timeout=8)
+        return None
+    except urllib.error.HTTPError as exc:
+        m = re.search(r"/releases/tag/([^/?#]+)", exc.headers.get("Location", ""))
+    except Exception:
+        return None
+    if not m:
+        return None
+    tag = m.group(1)
+    return {"tag_name": tag, "assets": [{
+        "name": asset_name, "size": 0,
+        "browser_download_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag}/{asset_name}",
+    }]}
+
+
 def _check_for_update(config: dict) -> None:
     """On startup: check GitHub for a newer release and self-update if auto_update is on."""
     if not config.get("auto_update", True):
@@ -3798,11 +3831,19 @@ def _check_for_update(config: dict) -> None:
         with urllib.request.urlopen(req, timeout=8) as r:
             release = json.loads(r.read())
     except Exception as exc:
-        log.debug("update check skipped: %s", exc)
-        return
+        release = None
+        if getattr(exc, "code", None) in (403, 429):
+            reset = getattr(exc, "headers", {}).get("X-RateLimit-Reset") if getattr(exc, "headers", None) else None
+            log.warning("GitHub API rate limit hit%s — checking via github.com instead "
+                        "(a \"github_token\" in config.json avoids this)",
+                        f" (resets at {time.strftime('%H:%M', time.localtime(int(reset)))})" if reset and reset.isdigit() else "")
+            release = _latest_release_via_web("cs2-webradar.exe" if IS_WINDOWS else "cs2-radar-linux")
+        if release is None:
+            log.info("update check skipped: %s", exc)
+            return
 
     latest_tag = release.get("tag_name", "")
-    if not latest_tag or latest_tag <= VERSION:
+    if not latest_tag or _ver_key(latest_tag) <= _ver_key(VERSION):
         log.info("up to date (%s)", VERSION)
         return
 
@@ -3836,7 +3877,7 @@ def _check_for_update(config: dict) -> None:
         return
 
     total_bytes = exe_asset["size"]
-    print(f"  Downloading {exe_asset['name']} ({total_bytes // 1024 // 1024} MB)...")
+    print(f"  Downloading {exe_asset['name']}" + (f" ({total_bytes // 1024 // 1024} MB)" if total_bytes else "") + "...")
     log.info("update: downloading %s (%d bytes)", exe_asset["name"], total_bytes)
     exe_path = Path(sys.executable)
     asset_suffix = "".join(Path(exe_asset["name"]).suffixes)

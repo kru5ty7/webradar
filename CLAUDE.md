@@ -56,14 +56,14 @@ Entry: `webapp/src/app.jsx`
 - `PlayerCard` — sidebar card (health, weapons, armor) shown on lg+ screens
 - `Latency` — ping display + settings panel trigger
 
-Settings (dot size, show names, view cones, grenades) are persisted to `localStorage` under key `radarSettings`.
+Settings are persisted to `localStorage` under key `radarSettings` and merged over `DEFAULT_SETTINGS` in `app.jsx`. Notable ones: PLAYERS group (`showAllies`, `showAllyNames`, `showEnemyNames`), utility display (`showUtilCircle`/`Name`/`Emoji`), `zoom` (1–4) and `followMe` (centre the local player). Ally/enemy colour is measured against `getLocalTeam()` (the local player's own team) so a team switch can't invert it. `set_auto_update` is sent to the helper only when `autoUpdate` changes. Settings UI exists twice: `SettingsButton.jsx` (browser) and the popup in `app.jsx` (minimap) — keep them in step.
 
 ## ai_agent_helper (Python memory reader)
 
 `ai_agent_helper/` is pure Python — no Visual Studio required.
 
 **How it works:**
-1. On first run it fetches current offsets from [a2x/cs2-dumper](https://github.com/a2x/cs2-dumper) and caches them in `offsets_cache.json` (refreshed every hour).
+1. On first run it fetches current offsets from [a2x/cs2-dumper](https://github.com/a2x/cs2-dumper) and caches them in `offsets_cache.json`. The cache stays valid while `client.dll` is older than it; only if the DLL can't be found does a 1-hour TTL apply. The Windows fork also invalidates the cache when the game build changes.
 2. Opens CS2 process via `ReadProcessMemory` (requires admin or a process with a handle CS2 already has).
 3. Walks the entity list at 10 Hz, builds the JSON payload, and serves it on `ws://HOST:22006/cs2_webradar`.
 
@@ -78,7 +78,7 @@ python main.py
 
 **Config:** `config.json` next to the script/exe (`m_use_localhost`, `m_local_ip`, `steam_id`, `auto_update`). Created automatically on first run; not tracked in git.
 
-**Offset updates:** delete `offsets_cache.json` to force a fresh fetch, or just wait for the 1-hour TTL.
+**Offset updates:** use the status pill's "Refresh offsets" button (WebSocket `refresh_offsets`, 30 s cooldown) or delete `offsets_cache.json` to force a fresh fetch. On Linux the a2x offsets are Windows-only for globals and fields, so the helper patches them with a local ELF scan and a field baseline.
 
 **Dependencies:** `requirements.txt` (`websockets`, `pywebview`, `Pillow`, `lz4`, `vpk`); memory access uses stdlib `ctypes`.
 
@@ -95,7 +95,7 @@ npm run preview      # serve the production build
 ```
 
 ### ai_agent_helper
-Windows: `run.bat` (as administrator). Linux: `run.sh`. Releases are built by `.github/workflows/release.yml` on `v*` tag pushes. First-time Windows setup: `ai_agent_helper_windows/setup_windows.py`.
+Windows: `run.bat` (as administrator). Linux: `run-linux.sh` (own `.venv`, Vite only for the frontend, backend under `sudo` because it reads `/proc/<pid>/mem`) or `run.sh` (no sudo). Releases are built by `.github/workflows/release.yml` on `v*` tag pushes. First-time Windows setup: `ai_agent_helper_windows/setup_windows.py`.
 
 ## Configuration
 

@@ -15,8 +15,9 @@ const CFG = {
     bg:         "rgba(150,160,170,0.92)",
     border:     "rgba(200,210,220,0.80)",
     text:       "#e8eef2",
-    areaBg:     "rgba(80, 90, 100, 0.88)",
-    areaBorder: "rgba(160, 175, 190, 1.00)",
+    // Dark ring, mostly see-through inside so dots under the smoke stay visible.
+    areaBg:     "rgba(18, 24, 32, 0.30)",
+    areaBorder: "rgba(10, 14, 20, 0.95)",
     areaAnim:   "grenadeSmokePulse 3s ease-in-out infinite",
     dotColor:   "rgba(190,200,210,0.95)",
   },
@@ -274,7 +275,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 height:       smokeDiam,
                 borderRadius: "50%",
                 background:   cfg.areaBg,
-                border:       `1.5px solid ${cfg.areaBorder}`,
+                border:       `2.5px solid ${cfg.areaBorder}`,
                 animation:    cfg.areaAnim,
                 left: "50%", top: "50%",
               }} />}

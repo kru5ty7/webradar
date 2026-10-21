@@ -80,6 +80,8 @@ python main.py
 
 **Offset updates:** delete `offsets_cache.json` to force a fresh fetch, or just wait for the 1-hour TTL.
 
+**WebSocket access control:** the helper rejects connections whose `Host` is not localhost, an IP, `*.ts.net` or listed in `config.json` `allowed_hosts` (DNS rebinding), and browser connections whose `Origin` host differs from `Host` (other websites). This also covers the HTTP server's `/cs2_webradar` proxy. `set_auto_update` and `refresh_offsets` are honoured only from this machine unless `allow_remote_control` is true. ngrok or custom domains must be added to `allowed_hosts`.
+
 **Dependencies:** `requirements.txt` (`websockets`, `pywebview`, `Pillow`, `lz4`, `vpk`); memory access uses stdlib `ctypes`.
 
 ## Development Commands

@@ -1,3 +1,4 @@
+import ColorField from "./ColorField";
 import { useState } from "react";
 
 const Toggle = ({ checked, onToggle, label }) => (
@@ -138,6 +139,46 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
               <Toggle label="Auto Update"      checked={!!(settings.autoUpdate ?? true)}        onToggle={() => toggle("autoUpdate")} />
             </div>
 
+            {/* Smoke color */}
+            <div className="pt-1">
+              <span className="text-radar-secondary text-sm block mb-2">Smoke Color</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {["#2c3138","#5c636c","#9aa3ad","#e5e7eb","#00cfff"].map(c => (
+                  <button
+                    key={c}
+                    onClick={() => onSettingsChange({ ...settings, smokeColor: c })}
+                    style={{
+                      background: c, width: 22, height: 22, borderRadius: "50%",
+                      border: (settings.smokeColor ?? "#2c3138") === c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)",
+                      cursor: "pointer", flexShrink: 0,
+                    }}
+                    title={c}
+                  />
+                ))}
+                <ColorField value={settings.smokeColor ?? "#2c3138"} onChange={v => onSettingsChange({ ...settings, smokeColor: v })} size={22} />
+              </div>
+            </div>
+
+            {/* Molly color */}
+            <div className="pt-1">
+              <span className="text-radar-secondary text-sm block mb-2">Molly Color</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {["#ff6a00","#ffb000","#ff2d2d","#ff3df0","#a3ff00"].map(c => (
+                  <button
+                    key={c}
+                    onClick={() => onSettingsChange({ ...settings, mollyColor: c })}
+                    style={{
+                      background: c, width: 22, height: 22, borderRadius: "50%",
+                      border: (settings.mollyColor ?? "#ff6a00") === c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)",
+                      cursor: "pointer", flexShrink: 0,
+                    }}
+                    title={c}
+                  />
+                ))}
+                <ColorField value={settings.mollyColor ?? "#ff6a00"} onChange={v => onSettingsChange({ ...settings, mollyColor: v })} size={22} />
+              </div>
+            </div>
+
             {/* Bomb color */}
             <div className="pt-1">
               <span className="text-radar-secondary text-sm block mb-2">Bomb Color</span>
@@ -154,13 +195,7 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                     title={c}
                   />
                 ))}
-                <input
-                  type="color"
-                  defaultValue={settings.bombColor ?? "#ff4500"}
-                  onInput={e => onSettingsChange({ ...settings, bombColor: e.target.value })}
-                  style={{ width: 22, height: 22, padding: 0, border: "none", borderRadius: "50%", cursor: "pointer", background: "none" }}
-                  title="Custom color"
-                />
+                <ColorField value={settings.bombColor ?? "#ff4500"} onChange={v => onSettingsChange({ ...settings, bombColor: v })} size={22} />
               </div>
             </div>
           </div>

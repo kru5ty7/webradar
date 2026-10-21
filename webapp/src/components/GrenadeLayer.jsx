@@ -15,8 +15,9 @@ const CFG = {
     bg:         "rgba(150,160,170,0.92)",
     border:     "rgba(200,210,220,0.80)",
     text:       "#e8eef2",
-    areaBg:     "rgba(80, 90, 100, 0.88)",
-    areaBorder: "rgba(160, 175, 190, 1.00)",
+    // Dark grey ring, mostly see-through inside so dots under the smoke stay visible.
+    areaBg:     "rgba(70, 76, 84, 0.32)",
+    areaBorder: "rgba(44, 49, 56, 1.00)",
     areaAnim:   "grenadeSmokePulse 3s ease-in-out infinite",
     dotColor:   "rgba(190,200,210,0.95)",
   },
@@ -66,6 +67,17 @@ const CFG = {
 
 // Same icons as the Smoke / Molly / Flash toggles in the settings panels
 const EMOJI = { smoke: "💨", molly: "🔥", flash: "⚡", he: "💥", decoy: "🔊" };
+
+// Smoke and molly each take one user-chosen colour (settings.smokeColor /
+// settings.mollyColor): the edge is solid, the inside stays see-through so dots
+// under the utility show.
+const SMOKE_DEFAULT = "#2c3138";
+const MOLLY_DEFAULT = "#ff6a00";
+const hexToRgba = (hex, alpha, fallback = SMOKE_DEFAULT) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  const n = parseInt((m ? m[1] : fallback.slice(1)), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+};
 
 // Badge text for a grenade, from the "Utility display" options:
 // name only ("SMK"), emoji only ("💨"), both ("💨 SMK") or nothing ("").
@@ -132,6 +144,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
   const showCircle = settings?.showUtilCircle ?? true;
   const showName   = settings?.showUtilName   ?? true;
   const showEmoji  = settings?.showUtilEmoji  ?? false;
+  const mollyRgba  = (a) => hexToRgba(settings?.mollyColor, a, MOLLY_DEFAULT);
 
   const filtered = grenades.filter((g) => {
     if (g.type === "smoke" && settings && !settings.showSmoke) return false;
@@ -194,8 +207,8 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 height:       rangeDiam,
                 borderRadius: "50%",
                 transform:    "translate(-50%,-50%)",
-                background:   cfg.rangeBg,
-                border:       `1.5px dashed ${cfg.rangeBorder}`,
+                background:   mollyRgba(0.26),
+                border:       `2px dashed ${mollyRgba(1)}`,
               }} />}
 
               {/* Individual flame dots */}
@@ -210,8 +223,8 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                     height:       flameDiam,
                     borderRadius: "50%",
                     transform:    "translate(-50%,-50%)",
-                    background:   cfg.areaBg,
-                    border:       `1px solid ${cfg.areaBorder}`,
+                    background:   mollyRgba(0.42),
+                    border:       `1.5px solid ${mollyRgba(1)}`,
                     animation:    cfg.areaAnim,
                   }} />
                 );
@@ -247,8 +260,8 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 height:       rangeDiam,
                 borderRadius: "50%",
                 transform:    "translate(-50%,-50%)",
-                background:   cfg.rangeBg,
-                border:       `1.5px dashed ${cfg.rangeBorder}`,
+                background:   mollyRgba(0.26),
+                border:       `2px dashed ${mollyRgba(1)}`,
                 animation:    cfg.areaAnim,
                 left: "50%", top: "50%",
               }} />}
@@ -273,8 +286,8 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 width:        smokeDiam,
                 height:       smokeDiam,
                 borderRadius: "50%",
-                background:   cfg.areaBg,
-                border:       `1.5px solid ${cfg.areaBorder}`,
+                background:   hexToRgba(settings?.smokeColor, 0.32),
+                border:       `2.5px solid ${hexToRgba(settings?.smokeColor, 1)}`,
                 animation:    cfg.areaAnim,
                 left: "50%", top: "50%",
               }} />}

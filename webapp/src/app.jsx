@@ -6,6 +6,7 @@ import Radar from "./components/radar";
 import { getLatency, Latency } from "./components/latency";
 import MaskedIcon from "./components/maskedicon";
 import EspOverlay from "./components/EspOverlay";
+import ColorField from "./components/ColorField";
 import StatusPill from "./components/StatusPill";
 import { getLocalTeam } from "./utilities/utilities";
 
@@ -194,10 +195,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
               style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
                 border: (settings.smokeColor ?? "#2c3138")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
           ))}
-          <input type="color" defaultValue={settings.smokeColor ?? "#2c3138"}
-            onInput={e => setVal("smokeColor", e.target.value)}
-            style={{ width:20, height:20, padding:0, border:"none", borderRadius:"50%",
-              cursor:"pointer", background:"none" }} />
+          <ColorField value={settings.smokeColor ?? "#2c3138"} onChange={v => setVal("smokeColor", v)} />
         </div>
       </div>
 
@@ -210,10 +208,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
               style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
                 border: (settings.mollyColor ?? "#ff6a00")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
           ))}
-          <input type="color" defaultValue={settings.mollyColor ?? "#ff6a00"}
-            onInput={e => setVal("mollyColor", e.target.value)}
-            style={{ width:20, height:20, padding:0, border:"none", borderRadius:"50%",
-              cursor:"pointer", background:"none" }} />
+          <ColorField value={settings.mollyColor ?? "#ff6a00"} onChange={v => setVal("mollyColor", v)} />
         </div>
       </div>
 
@@ -226,10 +221,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
               style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
                 border: settings.bombColor===c ? "2px solid #fff" : "2px solid transparent" }} />
           ))}
-          <input type="color" defaultValue={settings.bombColor ?? "#ff4500"}
-            onInput={e => setVal("bombColor", e.target.value)}
-            style={{ width:20, height:20, padding:0, border:"none", borderRadius:"50%",
-              cursor:"pointer", background:"none" }} />
+          <ColorField value={settings.bombColor ?? "#ff4500"} onChange={v => setVal("bombColor", v)} />
         </div>
       </div>
     </div>

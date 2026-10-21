@@ -1,3 +1,4 @@
+import ColorField from "./ColorField";
 import { useState } from "react";
 
 const Toggle = ({ checked, onToggle, label }) => (
@@ -154,13 +155,7 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                     title={c}
                   />
                 ))}
-                <input
-                  type="color"
-                  defaultValue={settings.smokeColor ?? "#2c3138"}
-                  onInput={e => onSettingsChange({ ...settings, smokeColor: e.target.value })}
-                  style={{ width: 22, height: 22, padding: 0, border: "none", borderRadius: "50%", cursor: "pointer", background: "none" }}
-                  title="Custom color"
-                />
+                <ColorField value={settings.smokeColor ?? "#2c3138"} onChange={v => onSettingsChange({ ...settings, smokeColor: v })} size={22} />
               </div>
             </div>
 
@@ -180,13 +175,7 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                     title={c}
                   />
                 ))}
-                <input
-                  type="color"
-                  defaultValue={settings.mollyColor ?? "#ff6a00"}
-                  onInput={e => onSettingsChange({ ...settings, mollyColor: e.target.value })}
-                  style={{ width: 22, height: 22, padding: 0, border: "none", borderRadius: "50%", cursor: "pointer", background: "none" }}
-                  title="Custom color"
-                />
+                <ColorField value={settings.mollyColor ?? "#ff6a00"} onChange={v => onSettingsChange({ ...settings, mollyColor: v })} size={22} />
               </div>
             </div>
 
@@ -206,13 +195,7 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                     title={c}
                   />
                 ))}
-                <input
-                  type="color"
-                  defaultValue={settings.bombColor ?? "#ff4500"}
-                  onInput={e => onSettingsChange({ ...settings, bombColor: e.target.value })}
-                  style={{ width: 22, height: 22, padding: 0, border: "none", borderRadius: "50%", cursor: "pointer", background: "none" }}
-                  title="Custom color"
-                />
+                <ColorField value={settings.bombColor ?? "#ff4500"} onChange={v => onSettingsChange({ ...settings, bombColor: v })} size={22} />
               </div>
             </div>
           </div>

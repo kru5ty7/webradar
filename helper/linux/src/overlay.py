@@ -121,7 +121,14 @@ def start(url: str, width: int = MINIMAP_W, height: int = MINIMAP_H,
     try:
         import webview
     except ImportError:
-        log.error("pywebview not installed. Run: pip install pywebview")
+        if getattr(sys, "frozen", False):
+            msg = ("The overlay windows are not part of the prebuilt Linux binary (it keeps the "
+                   "download small). Open http://localhost:5173 in a browser, or run from source "
+                   "(helper/linux/scripts/run-linux.sh --overlay) for the overlay.")
+            log.error(msg)
+            print("\n  " + msg + "\n")
+        else:
+            log.error("pywebview not installed. Run: pip install pywebview")
         return
 
     global _hwnd

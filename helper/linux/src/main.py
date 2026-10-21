@@ -4808,6 +4808,11 @@ def _pick_mode() -> str:
     Interactive mode selector shown at startup when no CLI flag is passed.
     Returns "browser", "minimap", or "esp".
     """
+    if sys.platform != "win32" and getattr(sys, "frozen", False):
+        # The prebuilt Linux binary ships without the GTK/WebKit stack the overlays need.
+        print("\n  Normal mode: open http://localhost:5173 in a browser "
+              "(overlays need a source install).\n")
+        return "browser"
     print("\n" + "=" * 50)
     print("  CS2 Radar — Select Mode")
     print("=" * 50)

@@ -52,6 +52,7 @@ export default function EspOverlay({ playerArray, localTeam, viewMatrix, bombDat
       if (!feet || !head) continue;
 
       const isEnemy = p.m_team !== localTeam;
+      if (!isEnemy && !(settings?.showAllies ?? true)) continue;
       const boxColor = isEnemy ? "rgba(255,80,80,0.9)" : "rgba(80,220,80,0.9)";
       const skelColor = isEnemy ? "rgba(255,140,140,0.7)" : "rgba(140,255,140,0.7)";
 
@@ -128,7 +129,7 @@ export default function EspOverlay({ playerArray, localTeam, viewMatrix, bombDat
         ctx.fillText(label, bm[0], bm[1] - 10);
       }
     }
-  }, [playerArray, localTeam, viewMatrix, bombData]);
+  }, [playerArray, localTeam, viewMatrix, bombData, settings?.showAllies]);
 
   useEffect(() => { draw(); }, [draw]);
 

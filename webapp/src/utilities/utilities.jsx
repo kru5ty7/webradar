@@ -1,3 +1,13 @@
+// The team that "ally" and "enemy" are measured against. Prefer the local
+// player's own entry in the same frame: the payload's m_local_team can lag
+// behind it (the helper falls back to the last known team whenever the local
+// controller's team reads invalid for a moment, e.g. around a half-time swap
+// or a manual team switch), which flipped every ally/enemy colour.
+export const getLocalTeam = (players, fallback) => {
+  const me = (players || []).find((p) => p.m_is_local && (p.m_team === 2 || p.m_team === 3));
+  return me ? me.m_team : fallback;
+};
+
 export const getRadarPosition = (mapData, entityCoords) => {
   if (!entityCoords.x || !entityCoords.y) {
     return { x: 0, y: 0 };

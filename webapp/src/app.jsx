@@ -7,6 +7,7 @@ import { getLatency, Latency } from "./components/latency";
 import MaskedIcon from "./components/maskedicon";
 import EspOverlay from "./components/EspOverlay";
 import StatusPill from "./components/StatusPill";
+import { getLocalTeam } from "./utilities/utilities";
 
 /* change this to '1' if you want to use offline (your own pc only) */
 const USE_LOCALHOST = 0;
@@ -40,7 +41,7 @@ if (IS_ESP) {
 const DEFAULT_SETTINGS = {
   dotSize: 1,
   bombSize: 0.5,
-  showAllNames: false,
+  showAllies: true,
   showEnemyNames: true,
   showViewCones: false,
   showSmoke: true,
@@ -150,7 +151,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       ))}
 
       {/* Toggles */}
-      <SettingRow label="Ally Names"  checked={!!settings.showAllNames}   onToggle={() => toggle("showAllNames")} />
+      <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
       <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
       <SettingRow label="View Cones"  checked={!!settings.showViewCones}  onToggle={() => toggle("showViewCones")} />
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />
@@ -378,6 +379,9 @@ const App = () => {
 
 
 
+  // Ally/enemy is measured against the local player's own team in this frame.
+  const effectiveLocalTeam = getLocalTeam(playerArray, localTeam);
+
   // ── ESP overlay mode ─────────────────────────────────────────────────────
   if (IS_ESP) {
     return (
@@ -389,7 +393,7 @@ const App = () => {
       }}>
         <EspOverlay
           playerArray={playerArray}
-          localTeam={localTeam}
+          localTeam={effectiveLocalTeam}
           viewMatrix={viewMatrix}
           bombData={bombData}
           settings={settings}
@@ -432,7 +436,7 @@ const App = () => {
               playerArray={playerArray}
               radarImage={`./data/${mapData.name}/radar.png`}
               mapData={mapData}
-              localTeam={localTeam}
+              localTeam={effectiveLocalTeam}
               averageLatency={averageLatency}
               bombData={bombData}
               grenades={grenades}
@@ -512,7 +516,7 @@ const App = () => {
               playerArray={playerArray}
               radarImage={`./data/${mapData.name}/radar.png`}
               mapData={mapData}
-              localTeam={localTeam}
+              localTeam={effectiveLocalTeam}
               averageLatency={averageLatency}
               bombData={bombData}
               grenades={grenades}

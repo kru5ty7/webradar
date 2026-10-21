@@ -35,7 +35,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          "VERSION = `"$env:TAG`"" | Out-File -FilePath helper/windows/version.py -Encoding utf8NoBOM
+          "VERSION = `"$env:TAG`"" | Out-File -FilePath helper/windows/src/version.py -Encoding utf8NoBOM
 
       # The Windows exe comes from the Windows-only fork, which carries the
       # Windows fixes; the Linux binary below still builds from helper/linux.
@@ -83,7 +83,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          echo "VERSION = \"$TAG\"" > helper/linux/version.py
+          echo "VERSION = \"$TAG\"" > helper/linux/src/version.py
 
       - name: Build binary
         run: cd helper/linux && pyinstaller radar.spec --noconfirm

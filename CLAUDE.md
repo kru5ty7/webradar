@@ -14,7 +14,7 @@ CS2 WebRadar is a browser-based radar for Counter-Strike 2. It has two component
 
 ```
 CS2 process (game memory)
-    → helper/linux|windows/main.py (Python memory reader, 10Hz polling)
+    → helper/linux|windows/src/main.py (Python memory reader, 10Hz polling)
         → WebSocket server on ws://HOST:22006/cs2_webradar
             → browser WebSocket clients
                 → React components
@@ -70,10 +70,10 @@ Settings are persisted to `localStorage` under key `radarSettings` and merged ov
 **Run:**
 ```bat
 cd helper/windows   # or helper/linux
-run.bat          # installs deps if needed, then starts
+scripts/run.bat          # installs deps if needed, then starts
 # or manually:
 pip install -r requirements.txt
-python main.py
+python src/main.py
 ```
 
 **Config:** `config.json` next to the script/exe (`m_use_localhost`, `m_local_ip`, `steam_id`, `auto_update`). Created automatically on first run; not tracked in git.
@@ -97,7 +97,7 @@ npm run preview      # serve the production build
 ```
 
 ### helper
-Windows (`helper/windows`): `run.bat` (as administrator). Linux (`helper/linux`): `run-linux.sh` (own `.venv`, Vite only for the frontend, backend under `sudo` because it reads `/proc/<pid>/mem`) or `run.sh` (no sudo). Releases are built by `.github/workflows/release.yml` on `v*` tag pushes. First-time Windows setup: `helper/windows/setup_windows.py`.
+Windows (`helper/windows`): `scripts/run.bat` (as administrator). Linux (`helper/linux`): `scripts/run-linux.sh` (own `.venv`, Vite only for the frontend, backend under `sudo` because it reads `/proc/<pid>/mem`) or `scripts/run.sh` (no sudo). Releases are built by `.github/workflows/release.yml` on `v*` tag pushes. First-time Windows setup: `helper/windows/scripts/setup_windows.py`.
 
 ## Configuration
 

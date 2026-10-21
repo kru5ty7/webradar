@@ -4,7 +4,8 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEBAPP_DIR="$DIR/../../webapp"
+OS_DIR="$(cd "$DIR/.." && pwd)"
+WEBAPP_DIR="$OS_DIR/../../webapp"
 PYTHON="${PYTHON:-python3}"
 MODE="${1:---normal}"
 
@@ -12,7 +13,7 @@ command -v "$PYTHON" >/dev/null 2>&1 || { echo "[error] python3 not found"; exit
 
 # Debian/Ubuntu block system-wide pip (PEP 668), so use a local venv. It sees
 # system packages too, which pywebview's GTK/Qt bindings need for the overlay.
-VENV="$DIR/.venv"
+VENV="$OS_DIR/.venv"
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "[info] creating virtualenv (needs python3-venv: sudo apt install python3-venv)..."
   "$PYTHON" -m venv --system-site-packages "$VENV"
@@ -20,7 +21,7 @@ fi
 PYTHON="$VENV/bin/python"
 if ! "$PYTHON" -c "import websockets, webview, PIL, vpk; import lz4.block" >/dev/null 2>&1; then
   echo "[info] installing Python dependencies..."
-  "$PYTHON" -m pip install -r "$DIR/requirements.txt"
+  "$PYTHON" -m pip install -r "$OS_DIR/requirements.txt"
 fi
 
 FRONTEND_PID=""
@@ -44,6 +45,6 @@ else
 fi
 
 echo "[2/2] Starting backend as root (mode: $MODE)..."
-cd "$DIR"
+cd "$OS_DIR/src"
 # Pass the display vars through explicitly so the overlay window can open as root.
 sudo env "HOME=$HOME" "DISPLAY=${DISPLAY:-}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" "$PYTHON" main.py "$MODE"

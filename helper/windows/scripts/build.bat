@@ -2,12 +2,12 @@
 setlocal
 
 echo [1/3] Building frontend...
-cd /d "%~dp0\..\..\webapp"
+cd /d "%~dp0\..\..\..\webapp"
 call npm run build
 if errorlevel 1 ( echo Frontend build FAILED & pause & exit /b 1 )
 
 echo [2/3] Installing Python deps...
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 pip install pyinstaller websockets pywebview --quiet
 
 echo [3/3] Compiling exe...

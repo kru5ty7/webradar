@@ -29,7 +29,7 @@ A browser-based radar and overlay for Counter-Strike 2. No kernel driver require
 
 ```bat
 cd helper\windows
-run.bat
+scripts\run.bat
 ```
 
 `run.bat` installs dependencies, shows the mode selector, starts the Vite dev server and Python backend together.
@@ -45,10 +45,10 @@ npm run dev
 # Terminal 2 — backend (run as Administrator)
 cd helper\windows
 pip install -r requirements.txt
-python main.py --normal     # or --overlay / --esp
+python src\main.py --normal     # or --overlay / --esp
 ```
 
-On Linux, from `helper/linux`: `./run-linux.sh` (creates its own `.venv`, runs the backend with `sudo`; modes `--normal`, `--overlay`, `--esp`) or `./run.sh` without sudo.
+On Linux, from `helper/linux`: `scripts/run-linux.sh` (creates its own `.venv`, runs the backend with `sudo`; modes `--normal`, `--overlay`, `--esp`) or `scripts/run.sh` without sudo.
 
 ## Modes
 
@@ -62,7 +62,7 @@ On Linux, from `helper/linux`: `./run-linux.sh` (creates its own `.venv`, runs t
 
 ```bat
 cd helper\windows
-build.bat
+scripts\build.bat
 ```
 
 Requires `pyinstaller` and `pywebview` (`pip install pyinstaller pywebview`). Output: `dist/cs2-webradar.exe`.

@@ -11,8 +11,8 @@ _extra_datas = [(_ESP, 'esp_bin')] if os.path.exists(_ESP) else []
 _webview_platforms = ['webview.platforms.edgechromium']
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    ['src/main.py'],
+    pathex=['src'],
     binaries=[],
     datas=[
         ('../../webapp/dist', 'webapp_dist'),

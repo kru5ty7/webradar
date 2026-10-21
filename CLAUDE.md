@@ -42,7 +42,7 @@ Entry: `webapp/src/app.jsx`
 **Map data** lives in `webapp/public/data/<mapname>/`:
 - `data.json` — `{ x, y, scale }` — world-space origin and units-per-pixel for coordinate mapping
 - `radar.png` — overhead map image
-- `background.png` — blurred background image
+- `background.webp` — page background (1280 px WebP, ~70 KB; `background.png` is still accepted as a fallback, which is what runtime-extracted maps use)
 - `callouts.json` — named area coordinates for the callout overlay layer
 
 **Radar coordinate conversion**: world (x, y) → radar pixel = `(worldCoord - mapOrigin) / scale`. Both `Player` and `Bomb` components implement this.
@@ -112,6 +112,6 @@ Windows (`helper/windows`): `scripts/run.bat` (as administrator). Linux (`helper
 
 ## Adding a New Map
 
-1. Create `webapp/public/data/<mapname>/` with `radar.png`, `background.png`, and `data.json` (origin x/y and scale from CS2 map overview files).
+1. Create `webapp/public/data/<mapname>/` with `radar.png`, `background.webp` (keep it small — everything under `webapp/dist` is bundled into the exe), and `data.json` (origin x/y and scale from CS2 map overview files).
 2. Optionally add `callouts.json` for the callout overlay.
 3. No code changes needed — the map name comes from the helper payload and is used to fetch the data directory dynamically.

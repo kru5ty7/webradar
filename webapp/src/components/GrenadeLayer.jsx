@@ -64,6 +64,14 @@ const CFG = {
   },
 };
 
+// Same icons as the Smoke / Molly / Flash toggles in the settings panels
+const EMOJI = { smoke: "💨", molly: "🔥", flash: "⚡", he: "💥", decoy: "🔊" };
+
+// Badge text for a grenade, from the "Utility display" options:
+// name only ("SMK"), emoji only ("💨"), both ("💨 SMK") or nothing ("").
+const badgeText = (type, cfg, showName, showEmoji) =>
+  [showEmoji && EMOJI[type], showName && cfg.label].filter(Boolean).join(" ");
+
 const STYLES = `
   @keyframes grenadeSmokePulse {
     0%   { transform: translate(-50%,-50%) scale(0.97); opacity:0.95; }
@@ -85,7 +93,10 @@ const STYLES = `
 `;
 
 // Shared badge style — small pill with coloured bg
-const Badge = ({ label, cfg, style = {} }) => (
+const Badge = ({ label, cfg, style = {} }) => {
+  if (!label) return null;
+  const emojiOnly = !/[A-Za-z]/.test(label);
+  return (
   <span style={{
     display:         "inline-block",
     fontSize:        9,
@@ -103,10 +114,12 @@ const Badge = ({ label, cfg, style = {} }) => (
     position:        "relative",
     zIndex:          4,
     ...style,
+    ...(emojiOnly ? { fontSize: (style.fontSize ?? 9) + 3 } : {}),
   }}>
     {label}
   </span>
-);
+  );
+};
 
 const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
   if (!grenades || !mapData || !radarImage) return null;
@@ -114,6 +127,11 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
   const { width: imgW, height: imgH } =
     radarImage.getBoundingClientRect?.() ?? { width: 0, height: 0 };
   const scale = mapData.scale;
+
+  // Utility display options (defaults keep the original look)
+  const showCircle = settings?.showUtilCircle ?? true;
+  const showName   = settings?.showUtilName   ?? true;
+  const showEmoji  = settings?.showUtilEmoji  ?? false;
 
   const filtered = grenades.filter((g) => {
     if (g.type === "smoke" && settings && !settings.showSmoke) return false;
@@ -134,6 +152,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
         const px  = imgW * pos.x;
         const py  = imgH * pos.y;
 
+        const label = badgeText(g.type, cfg, showName, showEmoji);
         const inFlight = g.deployed === false;
         const key = inFlight
           ? `${g.type}|inflight|${i}`
@@ -154,19 +173,20 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 border: `1px solid ${cfg.border}`,
                 boxShadow: `0 0 5px ${cfg.dotColor}`,
               }} />
-              <Badge label={cfg.label} cfg={cfg} style={{ fontSize: 7, padding: "1px 3px" }} />
+              <Badge label={label} cfg={cfg} style={{ fontSize: 7, padding: "1px 3px" }} />
             </div>
           );
         }
 
         // ── molly with real fire positions ─────────────────────────────────
         if (g.type === "molly" && g.firePts?.length) {
+          if (!showCircle && !label) return null;
           const flameDiam  = gameUnitsToPx(FLAME_RADIUS_UNITS * 2, scale, imgW);
           const rangeDiam  = gameUnitsToPx(MOLLY_RANGE_UNITS  * 2, scale, imgW);
           return (
             <div key={key} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", zIndex: 2 }}>
               {/* Outer range boundary */}
-              <div style={{
+              {showCircle && <div style={{
                 position:     "absolute",
                 left:         px,
                 top:          py,
@@ -176,10 +196,10 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 transform:    "translate(-50%,-50%)",
                 background:   cfg.rangeBg,
                 border:       `1.5px dashed ${cfg.rangeBorder}`,
-              }} />
+              }} />}
 
               {/* Individual flame dots */}
-              {g.firePts.map((fp, fi) => {
+              {showCircle && g.firePts.map((fp, fi) => {
                 const fpos = getRadarPosition(mapData, fp);
                 return (
                   <div key={fi} style={{
@@ -204,7 +224,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
                 zIndex: 4,
               }}>
-                <Badge label={cfg.label} cfg={cfg} />
+                <Badge label={label} cfg={cfg} />
               </div>
             </div>
           );
@@ -212,6 +232,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
 
         // ── molly fallback: no fire positions yet — show range circle only ──
         if (g.type === "molly") {
+          if (!showCircle && !label) return null;
           const rangeDiam = gameUnitsToPx(MOLLY_RANGE_UNITS * 2, scale, imgW);
           return (
             <div key={key} style={{
@@ -220,7 +241,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
               pointerEvents: "none", zIndex: 2,
               display: "flex", flexDirection: "column", alignItems: "center",
             }}>
-              <div style={{
+              {showCircle && <div style={{
                 position:     "absolute",
                 width:        rangeDiam,
                 height:       rangeDiam,
@@ -230,14 +251,15 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 border:       `1.5px dashed ${cfg.rangeBorder}`,
                 animation:    cfg.areaAnim,
                 left: "50%", top: "50%",
-              }} />
-              <Badge label={cfg.label} cfg={cfg} style={{ position: "relative", zIndex: 4 }} />
+              }} />}
+              <Badge label={label} cfg={cfg} style={{ position: "relative", zIndex: 4 }} />
             </div>
           );
         }
 
         // ── smoke: exact 144-unit radius circle ────────────────────────────
         if (g.type === "smoke") {
+          if (!showCircle && !label) return null;
           const smokeDiam = gameUnitsToPx(SMOKE_RADIUS_UNITS * 2, scale, imgW);
           return (
             <div key={key} style={{
@@ -246,7 +268,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
               pointerEvents: "none", zIndex: 2,
               display: "flex", flexDirection: "column", alignItems: "center",
             }}>
-              <div style={{
+              {showCircle && <div style={{
                 position:     "absolute",
                 width:        smokeDiam,
                 height:       smokeDiam,
@@ -255,14 +277,15 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 border:       `1.5px solid ${cfg.areaBorder}`,
                 animation:    cfg.areaAnim,
                 left: "50%", top: "50%",
-              }} />
-              <Badge label={cfg.label} cfg={cfg} style={{ position: "relative", zIndex: 4 }} />
+              }} />}
+              <Badge label={label} cfg={cfg} style={{ position: "relative", zIndex: 4 }} />
             </div>
           );
         }
 
         // ── flash / he / decoy deployed ────────────────────────────────────
-        const needsCircle = cfg.areaBg !== null && cfg.areaBorder !== null;
+        const needsCircle = showCircle && cfg.areaBg !== null && cfg.areaBorder !== null;
+        if (!needsCircle && !label) return null;
         const flashDiam   = needsCircle
           ? gameUnitsToPx(80, scale, imgW)   // flash blind radius ≈ 80 units
           : 0;
@@ -286,7 +309,7 @@ const GrenadeLayer = ({ grenades, mapData, radarImage, settings }) => {
                 left: "50%", top: "50%",
               }} />
             )}
-            <Badge label={cfg.label} cfg={cfg} style={{ position: "relative", zIndex: 4 }} />
+            <Badge label={label} cfg={cfg} style={{ position: "relative", zIndex: 4 }} />
           </div>
         );
       })}

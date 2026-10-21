@@ -55,6 +55,10 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
   const showDeathCross = settings.showDeathCross ?? true;
   if (playerData.m_is_dead && !showDeathCross) return null;
 
+  // "Show Allies" off: only enemies (and your own dot, as a reference point)
+  const isAlly = playerData.m_team == localTeam;
+  if (isAlly && !playerData.m_is_local && !(settings.showAllies ?? true)) return null;
+
   return (
     <div
       className={`absolute left-0 top-0`}
@@ -67,9 +71,8 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
         zIndex: `${(playerData.m_is_dead && `0`) || `1`}`,
       }}
     >
-      {/* Name above the dot — outside masked/rotating container */}
-      {(((settings.showAllNames ?? false) && playerData.m_team === localTeam) ||
-        ((settings.showEnemyNames ?? true) && playerData.m_team !== localTeam)) && (
+      {/* Enemy name above the dot — outside masked/rotating container */}
+      {(settings.showEnemyNames ?? true) && !isAlly && (
         <div className="absolute bottom-full left-1/2 -translate-x-1/2 -translate-y-1 text-center" style={{ whiteSpace: "nowrap", zIndex: 10 }}>
           <span className="text-xs text-white" style={{ textShadow: "0 0 3px #000, 0 0 3px #000" }}>
             {playerData.m_name}

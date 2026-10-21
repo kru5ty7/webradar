@@ -100,12 +100,18 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
 
             {/* Toggles */}
             <div className="space-y-1">
-              <Toggle label="Ally Names"       checked={!!settings.showAllNames}               onToggle={() => toggle("showAllNames")} />
+              <Toggle label="Show Allies"      checked={!!(settings.showAllies ?? true)}        onToggle={() => toggle("showAllies")} />
               <Toggle label="Enemy Names"      checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
               <Toggle label="View Cones"       checked={!!settings.showViewCones}               onToggle={() => toggle("showViewCones")} />
               <Toggle label="💨 Smoke"         checked={!!settings.showSmoke}                  onToggle={() => toggle("showSmoke")} />
               <Toggle label="🔥 Molly"         checked={!!settings.showMolly}                  onToggle={() => toggle("showMolly")} />
               <Toggle label="⚡ Flash"         checked={!!settings.showFlash}                  onToggle={() => toggle("showFlash")} />
+              <div className="ml-4 pl-2 border-l border-radar-secondary/20">
+                <div className="text-radar-secondary/50 text-[10px] tracking-widest px-3 pt-1">UTILITY DISPLAY</div>
+                <Toggle label="Circle"         checked={!!(settings.showUtilCircle ?? true)}   onToggle={() => toggle("showUtilCircle")} />
+                <Toggle label="Name"           checked={!!(settings.showUtilName ?? true)}     onToggle={() => toggle("showUtilName")} />
+                <Toggle label="Emoji"          checked={!!(settings.showUtilEmoji ?? false)}   onToggle={() => toggle("showUtilEmoji")} />
+              </div>
               <Toggle label="Map Callouts"     checked={!!(settings.showCallouts ?? true)}      onToggle={() => toggle("showCallouts")} />
               <Toggle label="Death Cross"      checked={!!(settings.showDeathCross ?? true)}    onToggle={() => toggle("showDeathCross")} />
               <Toggle label="Bomb Pulse"       checked={!!(settings.bombHighlight ?? true)}     onToggle={() => toggle("bombHighlight")} />

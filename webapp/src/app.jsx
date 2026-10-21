@@ -7,6 +7,7 @@ import { getLatency, Latency } from "./components/latency";
 import MaskedIcon from "./components/maskedicon";
 import EspOverlay from "./components/EspOverlay";
 import StatusPill from "./components/StatusPill";
+import { getLocalTeam } from "./utilities/utilities";
 
 /* change this to '1' if you want to use offline (your own pc only) */
 const USE_LOCALHOST = 0;
@@ -40,12 +41,15 @@ if (IS_ESP) {
 const DEFAULT_SETTINGS = {
   dotSize: 1,
   bombSize: 0.5,
-  showAllNames: false,
+  showAllies: true,
   showEnemyNames: true,
   showViewCones: false,
   showSmoke: true,
   showMolly: true,
   showFlash: true,
+  showUtilCircle: true,   // Utility display: area circle
+  showUtilName: true,     //   text label (SMK, MOL, ...)
+  showUtilEmoji: false,   //   emoji (💨 🔥 ⚡ ...)
   showCallouts: true,
   bombColor: "#ff4500",
   bombHighlight: true,
@@ -150,12 +154,18 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       ))}
 
       {/* Toggles */}
-      <SettingRow label="Ally Names"  checked={!!settings.showAllNames}   onToggle={() => toggle("showAllNames")} />
+      <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
       <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
       <SettingRow label="View Cones"  checked={!!settings.showViewCones}  onToggle={() => toggle("showViewCones")} />
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />
       <SettingRow label="Molotov"     checked={!!settings.showMolly}      onToggle={() => toggle("showMolly")} />
       <SettingRow label="Flash"       checked={!!settings.showFlash}      onToggle={() => toggle("showFlash")} />
+      <div style={{ marginLeft: 10, paddingLeft: 8, borderLeft: "1px solid rgba(255,255,255,0.1)" }}>
+        <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 9, letterSpacing: "0.08em", padding: "4px 0 0" }}>UTILITY DISPLAY</div>
+        <SettingRow label="Circle" checked={!!(settings.showUtilCircle ?? true)} onToggle={() => toggle("showUtilCircle")} />
+        <SettingRow label="Name"   checked={!!(settings.showUtilName ?? true)}   onToggle={() => toggle("showUtilName")} />
+        <SettingRow label="Emoji"  checked={!!(settings.showUtilEmoji ?? false)} onToggle={() => toggle("showUtilEmoji")} />
+      </div>
       <SettingRow label="Callouts"    checked={!!settings.showCallouts}   onToggle={() => toggle("showCallouts")} />
       <SettingRow label="Death Cross"    checked={!!settings.showDeathCross} onToggle={() => toggle("showDeathCross")} />
       <SettingRow label="Bomb Pulse"     checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />
@@ -378,6 +388,9 @@ const App = () => {
 
 
 
+  // Ally/enemy is measured against the local player's own team in this frame.
+  const effectiveLocalTeam = getLocalTeam(playerArray, localTeam);
+
   // ── ESP overlay mode ─────────────────────────────────────────────────────
   if (IS_ESP) {
     return (
@@ -389,7 +402,7 @@ const App = () => {
       }}>
         <EspOverlay
           playerArray={playerArray}
-          localTeam={localTeam}
+          localTeam={effectiveLocalTeam}
           viewMatrix={viewMatrix}
           bombData={bombData}
           settings={settings}
@@ -432,7 +445,7 @@ const App = () => {
               playerArray={playerArray}
               radarImage={`./data/${mapData.name}/radar.png`}
               mapData={mapData}
-              localTeam={localTeam}
+              localTeam={effectiveLocalTeam}
               averageLatency={averageLatency}
               bombData={bombData}
               grenades={grenades}
@@ -512,7 +525,7 @@ const App = () => {
               playerArray={playerArray}
               radarImage={`./data/${mapData.name}/radar.png`}
               mapData={mapData}
-              localTeam={localTeam}
+              localTeam={effectiveLocalTeam}
               averageLatency={averageLatency}
               bombData={bombData}
               grenades={grenades}

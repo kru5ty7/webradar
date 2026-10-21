@@ -1,15 +1,7 @@
-import { useState, useEffect } from "react";
 import MaskedIcon from "./maskedicon";
 import { playerColors, teamEnum } from "../utilities/utilities";
 
 const PlayerCard = ({ playerData, isOnRightSide }) => {
-  const [modelName, setModelName] = useState(playerData.m_model_name);
-
-  useEffect(() => {
-    if (playerData.m_model_name)
-      setModelName(playerData.m_model_name);
-  }, [playerData.m_model_name]);
-
   return (
     <li
       style={{ opacity: `${(playerData.m_is_dead && `0.5`) || `1`}` }}
@@ -40,7 +32,7 @@ const PlayerCard = ({ playerData, isOnRightSide }) => {
         ></div>
         <img
           className={`h-[3.5rem] ${isOnRightSide && `scale-x-[-1]`}`}
-          src={`./assets/characters/${modelName}.png`}
+          src="./assets/character.webp"
         ></img>
       </div>
 

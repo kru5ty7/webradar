@@ -386,7 +386,7 @@ const App = () => {
               setMapData({ ...(await res.json()), name: map });
               document.body.style.backgroundImage = IS_OVERLAY
                 ? "none"
-                : `url(./data/${map}/background.png)`;
+                : `url(./data/${map}/background.webp), url(./data/${map}/background.png)`;
             } else {
               console.warn(`No map data for "${map}" (${res.status})`);
             }

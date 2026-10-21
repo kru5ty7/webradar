@@ -49,6 +49,8 @@ webapp/      React + Vite frontend
 
 The Windows build ships with auto-update off; replace the exe yourself to update.
 
+The prebuilt **Linux** binary (~16 MB) is browser mode only: the minimap and ESP overlay windows need GTK/WebKit, which would add ~50 MB, so they are left out. Use `helper/linux/scripts/run-linux.sh --overlay` from a source checkout if you want the overlay on Linux.
+
 ## Running from source
 
 **Windows** (administrator PowerShell, first time only: `helper\windows\scripts\setup_windows.ps1` installs Python, Node and the dependencies):

@@ -10,10 +10,19 @@ _ESP = os.environ.get(
     os.path.abspath(os.path.join('..', 'cs2-external-esp', 'x64', 'Release', 'cs2-external-esp.exe')),
 )
 _extra_datas = [(_ESP, 'esp_bin')] if _IS_WINDOWS and os.path.exists(_ESP) else []
-_webview_platforms = (
-    ['webview.platforms.edgechromium'] if _IS_WINDOWS
-    else ['webview.platforms.gtk', 'webview.platforms.qt']
+# Linux: the overlay windows (pywebview + GTK/WebKit via PyGObject) are left out of the
+# prebuilt binary. PyInstaller would bundle libgtk/libwebkit2gtk and friends, about 50 MB
+# of a ~16 MB program. Run from source for the overlays.
+_webview_platforms = ['webview.platforms.edgechromium'] if _IS_WINDOWS else []
+_webview_imports = (
+    ['webview', 'webview.platforms', *_webview_platforms,
+     'webview.js', 'webview.event', 'webview.util', 'webview.screen',
+     'webview.window', 'webview.menu']
+    if _IS_WINDOWS else []
 )
+_gui_excludes = [] if _IS_WINDOWS else [
+    'webview', 'gi', 'cairo', 'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'qtpy', 'tkinter',
+]
 
 a = Analysis(
     ['src/main.py'],
@@ -27,14 +36,12 @@ a = Analysis(
         'websockets', 'websockets.server', 'websockets.connection',
         'websockets.exceptions', 'websockets.frames', 'websockets.http11',
         'websockets.streams', 'websockets.legacy', 'websockets.legacy.server',
-        'webview', 'webview.platforms', *_webview_platforms,
-        'webview.js', 'webview.event', 'webview.util', 'webview.screen',
-        'webview.window', 'webview.menu',
+        *_webview_imports,
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter'],
+    excludes=['tkinter', *_gui_excludes],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

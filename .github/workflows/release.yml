@@ -65,19 +65,14 @@ jobs:
       - name: Build frontend
         run: cd webapp && npm install && npm run build
 
-      - name: Install system deps for pywebview
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgirepository1.0-dev libcairo2-dev pkg-config python3-dev \
-            gir1.2-gtk-3.0 gir1.2-webkit2-4.0
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python deps
-        run: pip install pyinstaller websockets pywebview Pillow lz4 vpk "pygobject<3.50"
+        # No pywebview / PyGObject / GTK here: the overlay windows are not part of the
+        # prebuilt Linux binary (see helper/linux/radar.spec), which keeps it ~16 MB.
+        run: pip install pyinstaller websockets Pillow lz4 vpk
 
       - name: Stamp version
         env:

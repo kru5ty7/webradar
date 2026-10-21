@@ -2680,15 +2680,23 @@ def _start_http(static_dir: str, maps_cache: Path):
             p = posixpath.normpath(p).lstrip("/")
             parts = p.split("/")
 
+            # Never serve anything outside the two roots (".." can survive
+            # normpath when the request target has no leading slash).
+            def _inside(candidate: Path, root) -> bool:
+                try:
+                    return candidate.resolve().is_relative_to(Path(root).resolve())
+                except (OSError, ValueError):
+                    return False
+
             # /data/<map>/... → check maps_cache first
             if len(parts) >= 2 and parts[0] == "data":
                 candidate = _maps / Path(*parts[1:])
-                if candidate.exists() and candidate.is_file():
+                if candidate.is_file() and _inside(candidate, _maps):
                     return candidate
 
             # fallback to static dir
             candidate = Path(_static) / Path(*parts) if parts else Path(_static)
-            if candidate.is_file():
+            if candidate.is_file() and _inside(candidate, _static):
                 return candidate
             # try index.html for SPA routes
             index = Path(_static) / "index.html"

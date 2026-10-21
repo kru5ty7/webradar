@@ -14,7 +14,7 @@ CS2 WebRadar is a browser-based radar for Counter-Strike 2. It has two component
 
 ```
 CS2 process (game memory)
-    → helper/linux|windows/src/main.py (Python memory reader, 10Hz polling)
+    → helper/linux|windows/src/main.py (Python memory reader, ~30 Hz polling)
         → WebSocket server on ws://HOST:22006/cs2_webradar
             → browser WebSocket clients
                 → React components

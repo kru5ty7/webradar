@@ -2444,7 +2444,14 @@ def _ws_can_control(websocket, headers) -> bool:
     # The HTTP server's /cs2_webradar proxy connects from loopback; it passes
     # the real client address along. Only trusted when the hop itself is local.
     real = headers.get("X-Radar-Peer") if _is_loopback(peer) else None
-    if _is_loopback(real or peer):
+    # A tunnel (Tailscale, ngrok, cloudflared) also connects from loopback, so
+    # "local" additionally needs a loopback Host and no proxy headers.
+    host = _hostname(headers.get("Host", ""))
+    host_local = host == "localhost" or host.endswith(".localhost") or _is_loopback(host)
+    proxied = any(headers.get(h) for h in (
+        "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP",
+        "CF-Connecting-IP", "Tailscale-User-Login", "Tailscale-User-Name"))
+    if _is_loopback(real or peer) and host_local and not proxied:
         return True
     return bool(load_config().get("allow_remote_control"))
 

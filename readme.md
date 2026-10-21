@@ -28,8 +28,8 @@ A browser-based radar and overlay for Counter-Strike 2. No kernel driver require
 ## Running from Source
 
 ```bat
-cd ai_agent_helper
-run.bat
+cd helper\windows
+scripts\run.bat
 ```
 
 `run.bat` installs dependencies, shows the mode selector, starts the Vite dev server and Python backend together.
@@ -43,10 +43,12 @@ npm install
 npm run dev
 
 # Terminal 2 — backend (run as Administrator)
-cd ai_agent_helper
+cd helper\windows
 pip install -r requirements.txt
-python main.py --normal     # or --overlay / --esp
+python src\main.py --normal     # or --overlay / --esp
 ```
+
+On Linux, from `helper/linux`: `scripts/run-linux.sh` (creates its own `.venv`, runs the backend with `sudo`; modes `--normal`, `--overlay`, `--esp`) or `scripts/run.sh` without sudo.
 
 ## Modes
 
@@ -59,11 +61,11 @@ python main.py --normal     # or --overlay / --esp
 ## Building the exe
 
 ```bat
-cd ai_agent_helper
-build.bat
+cd helper\windows
+scripts\build.bat
 ```
 
-Requires `pyinstaller` and `pywebview` (`pip install pyinstaller pywebview`). Output: `dist/GameOverlayService_v12.exe`.
+Requires `pyinstaller` and `pywebview` (`pip install pyinstaller pywebview`). Output: `dist/cs2-webradar.exe`.
 
 ## How Offsets Work
 

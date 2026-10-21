@@ -2,7 +2,8 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEBAPP_DIR="$DIR/../webapp"
+OS_DIR="$(cd "$DIR/.." && pwd)"
+WEBAPP_DIR="$OS_DIR/../../webapp"
 PYTHON="${PYTHON:-python3}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
@@ -19,10 +20,10 @@ echo "[1/3] Building frontend..."
 (cd "$WEBAPP_DIR" && npm run build)
 
 echo "[2/3] Installing Python build dependencies..."
-"$PYTHON" -m pip install --user -r "$DIR/requirements.txt" pyinstaller
+"$PYTHON" -m pip install --user -r "$OS_DIR/requirements.txt" pyinstaller
 
 echo "[3/3] Building Linux binary..."
-cd "$DIR"
+cd "$OS_DIR"
 rm -rf build
 "$PYTHON" -m PyInstaller radar.spec --noconfirm
 

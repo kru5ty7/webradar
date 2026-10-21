@@ -56,7 +56,8 @@ GITHUB_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 # ── config ────────────────────────────────────────────────────────────────────
 # When frozen (PyInstaller onefile), __file__ is inside the temp _MEIPASS dir
 # which is deleted on exit. Use sys.executable's dir so config persists next to the exe.
-ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+# Runtime files (config.json, offsets_cache.json, radar.log) live in the OS folder, one above src/.
+ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT / "config.json"
 CACHE_FILE  = ROOT / "offsets_cache.json"
 LOG_FILE    = ROOT / "radar.log"
@@ -4105,7 +4106,7 @@ def _static_path() -> str | None:
     if getattr(sys, "frozen", False):
         p = Path(sys._MEIPASS) / "webapp_dist"
     else:
-        p = Path(__file__).parent.parent / "webapp" / "dist"
+        p = Path(__file__).resolve().parents[3] / "webapp" / "dist"
     if p.exists():
         return str(p)
     log.warning("static dir not found at %s — HTTP server disabled (run npm run build)", p)
@@ -4116,7 +4117,7 @@ def _maps_cache_path() -> Path:
     """Writable directory where auto-extracted map data is stored."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent / "maps_cache"
-    return Path(__file__).parent.parent / "webapp" / "public" / "data"
+    return Path(__file__).resolve().parents[3] / "webapp" / "public" / "data"
 
 
 # ── map extractor ─────────────────────────────────────────────────────────────

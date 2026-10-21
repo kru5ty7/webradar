@@ -16,11 +16,11 @@ _webview_platforms = (
 )
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    ['src/main.py'],
+    pathex=['src'],
     binaries=[],
     datas=[
-        ('../webapp/dist', 'webapp_dist'),
+        ('../../webapp/dist', 'webapp_dist'),
         *_extra_datas,
     ],
     hiddenimports=[

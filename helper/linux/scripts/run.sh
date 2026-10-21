@@ -2,7 +2,8 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEBAPP_DIR="$DIR/../webapp"
+OS_DIR="$(cd "$DIR/.." && pwd)"
+WEBAPP_DIR="$OS_DIR/../../webapp"
 PYTHON="${PYTHON:-python3}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
@@ -12,7 +13,7 @@ fi
 
 if ! "$PYTHON" -c "import websockets, webview, PIL, vpk; import lz4.block" >/dev/null 2>&1; then
   echo "[info] installing Python dependencies..."
-  "$PYTHON" -m pip install --user -r "$DIR/requirements.txt"
+  "$PYTHON" -m pip install --user -r "$OS_DIR/requirements.txt"
 fi
 
 echo
@@ -53,5 +54,5 @@ else
 fi
 
 echo "[2/2] Starting backend (mode: $MODE)..."
-cd "$DIR"
+cd "$OS_DIR/src"
 "$PYTHON" main.py "$MODE"

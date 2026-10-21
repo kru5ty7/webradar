@@ -165,7 +165,7 @@ def main():
     kv = _parse_kv(txt_data)
     print(f"  KV: {kv}")
 
-    out_dir = Path(__file__).parent.parent / "webapp" / "public" / "data" / "de_cache"
+    out_dir = Path(__file__).resolve().parents[3] / "webapp" / "public" / "data" / "de_cache"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     data_json = {

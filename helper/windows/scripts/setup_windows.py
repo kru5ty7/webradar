@@ -1,9 +1,9 @@
 """
 One-shot Windows setup for CS2 WebRadar. Run from an *administrator* PowerShell:
 
-    python setup_windows.py              # install whatever is missing
-    python setup_windows.py --build      # ...and build the webapp (webapp/dist)
-    python setup_windows.py --check      # only report what is missing
+    python scripts/setup_windows.py              # install whatever is missing
+    python scripts/setup_windows.py --build      # ...and build the webapp (webapp/dist)
+    python scripts/setup_windows.py --check      # only report what is missing
 
 Each step checks first and installs only when needed, so re-running is safe:
 
@@ -14,7 +14,7 @@ Each step checks first and installs only when needed, so re-running is safe:
   4. Python packages       (requirements.txt, only missing/outdated ones)
   5. webapp npm packages   (npm ci, only when node_modules is missing/stale)
 
-No Python on the machine at all? Run setup_windows.ps1 instead; it installs
+No Python on the machine at all? Run scripts/setup_windows.ps1 instead; it installs
 Python and then runs this script.
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ import sys
 from pathlib import Path
 
 HERE         = Path(__file__).resolve().parent
-WEBAPP       = HERE.parent / "webapp"
-REQUIREMENTS = HERE / "requirements.txt"
+WEBAPP       = HERE.parents[2] / "webapp"
+REQUIREMENTS = HERE.parent / "requirements.txt"
 
 MIN_PYTHON = (3, 10)   # main.py uses `X | None` annotations at runtime
 MIN_NODE   = 18        # vite 4 needs >= 16; 18 is the oldest supported LTS
@@ -129,7 +129,7 @@ def ensure_python(check_only: bool) -> None:
     new = find_new_python()
     if not new:
         sys.exit("  Python install did not produce a usable interpreter. Open a new "
-                 "admin PowerShell and run: py -3 setup_windows.py")
+                 "admin PowerShell and run: py -3 scripts/setup_windows.py")
     say(f"re-running under {new}")
     sys.exit(subprocess.call([new, str(Path(__file__).resolve()), *sys.argv[1:]]))
 

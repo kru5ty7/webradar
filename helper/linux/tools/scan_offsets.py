@@ -1,8 +1,9 @@
 import struct, json, time, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from platform_utils import find_client_binary
 
-CACHE = Path(__file__).parent / "offsets_cache.json"
+CACHE = Path(__file__).resolve().parents[1] / "offsets_cache.json"
 DLL = find_client_binary()
 if not DLL:
     sys.exit("client module not found; set CS2_DIR or install CS2 through Steam")

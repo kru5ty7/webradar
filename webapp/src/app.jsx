@@ -283,6 +283,7 @@ const App = () => {
   const [dropped, setDropped]   = useState([]);
   const [viewMatrix, setViewMatrix] = useState([]);
   const [settings, setSettings] = useState(loadSettings());
+  const lastAutoUpdate = useRef(null);
   const [serverAddr, setServerAddr] = useState(null);
   const [tailscaleAddr, setTailscaleAddr] = useState(null);
   const [funnelAddr, setFunnelAddr] = useState(null);
@@ -294,7 +295,12 @@ const App = () => {
   // Persist settings and sync auto-update preference to backend
   useEffect(() => {
     localStorage.setItem("radarSettings", JSON.stringify(settings));
-    sendToBackend({ type: "set_auto_update", value: !!(settings.autoUpdate ?? true) });
+    // Only when the preference changes; every other toggle used to re-send it.
+    const au = !!(settings.autoUpdate ?? true);
+    if (lastAutoUpdate.current !== au) {
+      lastAutoUpdate.current = au;
+      sendToBackend({ type: "set_auto_update", value: au });
+    }
   }, [settings]);
 
   useEffect(() => {
@@ -320,7 +326,11 @@ const App = () => {
         return;
       }
 
-      ws.onopen = () => console.info("WS connected →", wsUrl);
+      ws.onopen = () => {
+        console.info("WS connected →", wsUrl);
+        // The preference is only re-sent when it changes, so tell a fresh connection.
+        if (lastAutoUpdate.current !== null) sendToBackend({ type: "set_auto_update", value: lastAutoUpdate.current });
+      };
 
       ws.onclose = () => {
         console.warn("WS closed — retrying in 3 s");

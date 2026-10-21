@@ -47,6 +47,9 @@ const DEFAULT_SETTINGS = {
   showSmoke: true,
   showMolly: true,
   showFlash: true,
+  showUtilCircle: true,   // Utility display: area circle
+  showUtilName: true,     //   text label (SMK, MOL, ...)
+  showUtilEmoji: false,   //   emoji (💨 🔥 ⚡ ...)
   showCallouts: true,
   bombColor: "#ff4500",
   bombHighlight: true,
@@ -157,6 +160,12 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />
       <SettingRow label="Molotov"     checked={!!settings.showMolly}      onToggle={() => toggle("showMolly")} />
       <SettingRow label="Flash"       checked={!!settings.showFlash}      onToggle={() => toggle("showFlash")} />
+      <div style={{ marginLeft: 10, paddingLeft: 8, borderLeft: "1px solid rgba(255,255,255,0.1)" }}>
+        <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 9, letterSpacing: "0.08em", padding: "4px 0 0" }}>UTILITY DISPLAY</div>
+        <SettingRow label="Circle" checked={!!(settings.showUtilCircle ?? true)} onToggle={() => toggle("showUtilCircle")} />
+        <SettingRow label="Name"   checked={!!(settings.showUtilName ?? true)}   onToggle={() => toggle("showUtilName")} />
+        <SettingRow label="Emoji"  checked={!!(settings.showUtilEmoji ?? false)} onToggle={() => toggle("showUtilEmoji")} />
+      </div>
       <SettingRow label="Callouts"    checked={!!settings.showCallouts}   onToggle={() => toggle("showCallouts")} />
       <SettingRow label="Death Cross"    checked={!!settings.showDeathCross} onToggle={() => toggle("showDeathCross")} />
       <SettingRow label="Bomb Pulse"     checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />

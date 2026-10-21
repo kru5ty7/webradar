@@ -1,1 +1,75 @@
-{"map": "de_dust2", "callouts": []}
+{
+  "map": "de_dust2",
+  "callouts": [
+    {
+      "name": "A Site",
+      "x": 0.8,
+      "y": 0.16
+    },
+    {
+      "name": "B Site",
+      "x": 0.21,
+      "y": 0.12
+    },
+    {
+      "name": "CT Spawn",
+      "x": 0.59,
+      "y": 0.2
+    },
+    {
+      "name": "T Spawn",
+      "x": 0.38,
+      "y": 0.9
+    },
+    {
+      "name": "Mid",
+      "x": 0.46,
+      "y": 0.52
+    },
+    {
+      "name": "Xbox",
+      "x": 0.485,
+      "y": 0.41
+    },
+    {
+      "name": "Long A",
+      "x": 0.89,
+      "y": 0.4
+    },
+    {
+      "name": "A Ramp",
+      "x": 0.65,
+      "y": 0.3
+    },
+    {
+      "name": "Catwalk",
+      "x": 0.6,
+      "y": 0.39
+    },
+    {
+      "name": "Outside Tunnels",
+      "x": 0.18,
+      "y": 0.68
+    },
+    {
+      "name": "Lower Tunnels",
+      "x": 0.18,
+      "y": 0.53
+    },
+    {
+      "name": "Upper Tunnels",
+      "x": 0.15,
+      "y": 0.44
+    },
+    {
+      "name": "B Doors",
+      "x": 0.3,
+      "y": 0.15
+    },
+    {
+      "name": "CT Mid",
+      "x": 0.5,
+      "y": 0.22
+    }
+  ]
+}

@@ -3928,7 +3928,84 @@ def _json_sanitize(value):
     return value
 
 
+# ── WebSocket access control ─────────────────────────────────────────────────
+# Any web page the user visits can open ws://localhost:22006. Without a check it
+# could read the radar and send commands. Browsers always attach an Origin, so:
+#   * the Host must be a name we expect (blocks DNS rebinding), and
+#   * a browser Origin must be the same host as Host (blocks other sites).
+# Tools without an Origin header are allowed. State-changing messages are only
+# honoured from this machine unless config.json sets "allow_remote_control".
+def _hostname(value: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit("//" + value).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _host_ok(host: str) -> bool:
+    import ipaddress
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".ts.net"):
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    extra = load_config().get("allowed_hosts") or []
+    return host in {str(h).lower().rstrip(".") for h in extra}
+
+
+def _ws_origin_ok(headers) -> bool:
+    host = _hostname(headers.get("Host", ""))
+    if not _host_ok(host):
+        return False
+    origin = headers.get("Origin")
+    if not origin:
+        return True
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit(origin).hostname or "").lower().rstrip(".") == host
+    except ValueError:
+        return False
+
+
+def _is_loopback(addr: str) -> bool:
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(addr.split("%")[0])
+    except ValueError:
+        return False
+    return (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
+
+
+def _ws_headers(websocket):
+    req = getattr(websocket, "request", None)           # websockets >= 13
+    headers = getattr(req, "headers", None)
+    return headers if headers is not None else getattr(websocket, "request_headers", {})
+
+
+def _ws_can_control(websocket, headers) -> bool:
+    peer = (getattr(websocket, "remote_address", None) or ("",))[0]
+    # The HTTP server's /cs2_webradar proxy connects from loopback; it passes
+    # the real client address along. Only trusted when the hop itself is local.
+    real = headers.get("X-Radar-Peer") if _is_loopback(peer) else None
+    if _is_loopback(real or peer):
+        return True
+    return bool(load_config().get("allow_remote_control"))
+
+
 async def _ws_handler(websocket):
+    headers = _ws_headers(websocket)
+    if not _ws_origin_ok(headers):
+        log.warning("websocket rejected (Host=%r Origin=%r); add the host to "
+                    "allowed_hosts in config.json if this is yours",
+                    headers.get("Host"), headers.get("Origin"))
+        await websocket.close(1008, "origin not allowed")
+        return
+    can_control = _ws_can_control(websocket, headers)
     _clients.add(websocket)
     log.info("browser connected  (%d total)", len(_clients))
     try:
@@ -3936,6 +4013,9 @@ async def _ws_handler(websocket):
         async for msg in websocket:
             try:
                 data = json.loads(msg)
+                if data.get("type") in ("set_auto_update", "refresh_offsets") and not can_control:
+                    log.warning("ignored %s from a remote client (config allow_remote_control)", data.get("type"))
+                    continue
                 if data.get("type") == "set_auto_update":
                     cfg = load_config()
                     cfg["auto_update"] = bool(data.get("value", True))
@@ -4252,6 +4332,9 @@ def _start_http(static_dir: str, maps_cache: Path):
             # Proxy WebSocket upgrades to the WS server at WS_PORT
             if (self.path.split("?")[0] == "/cs2_webradar" and
                     self.headers.get("Upgrade", "").lower() == "websocket"):
+                if not _ws_origin_ok(self.headers):
+                    self.send_error(403)
+                    return
                 self._proxy_ws()
                 return
             path = self._resolve(self.path)
@@ -4290,6 +4373,7 @@ def _start_http(static_dir: str, maps_cache: Path):
             backend.sendall((
                 f"GET /cs2_webradar HTTP/1.1\r\n"
                 f"Host: localhost:{WS_PORT}\r\n"
+                f"X-Radar-Peer: {self.client_address[0]}\r\n"
                 f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
                 f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
             ).encode())

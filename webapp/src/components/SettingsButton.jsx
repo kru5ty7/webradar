@@ -112,6 +112,21 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                 <Toggle label="Name"           checked={!!(settings.showUtilName ?? true)}     onToggle={() => toggle("showUtilName")} />
                 <Toggle label="Emoji"          checked={!!(settings.showUtilEmoji ?? false)}   onToggle={() => toggle("showUtilEmoji")} />
               </div>
+              <div className="flex justify-between items-center">
+                <span className="text-radar-secondary text-sm">Zoom</span>
+                <span id="lbl-zoom" className="text-radar-primary text-sm font-mono">{(settings.zoom ?? 1).toFixed(2)}x</span>
+              </div>
+              <input
+                type="range" min="1" max="4" step="0.25"
+                defaultValue={settings.zoom ?? 1}
+                onInput={e => {
+                  const v = parseFloat(e.target.value);
+                  document.getElementById("lbl-zoom").textContent = v.toFixed(2) + "x";
+                  onSettingsChange({ ...settings, zoom: v });
+                }}
+                className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-radar-primary"
+              />
+              <Toggle label="Follow Me"       checked={!!(settings.followMe ?? false)}        onToggle={() => toggle("followMe")} />
               <Toggle label="Map Callouts"     checked={!!(settings.showCallouts ?? true)}      onToggle={() => toggle("showCallouts")} />
               <Toggle label="Death Cross"      checked={!!(settings.showDeathCross ?? true)}    onToggle={() => toggle("showDeathCross")} />
               <Toggle label="Bomb Pulse"       checked={!!(settings.bombHighlight ?? true)}     onToggle={() => toggle("bombHighlight")} />

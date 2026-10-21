@@ -51,6 +51,8 @@ const DEFAULT_SETTINGS = {
   showUtilName: true,     //   text label (SMK, MOL, ...)
   showUtilEmoji: false,   //   emoji (💨 🔥 ⚡ ...)
   showCallouts: true,
+  zoom: 1,                // 1 = whole map
+  followMe: false,        // keep the local player centred (needs zoom > 1)
   bombColor: "#ff4500",
   bombHighlight: true,
   showDeathCross: true,
@@ -132,6 +134,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
       {/* Sliders — uncontrolled (defaultValue) + onInput for live updates */}
       {[
         { label:"Dot Size",        key:"dotSize",       min:0.5, max:2,   step:0.1 },
+        { label:"Zoom",            key:"zoom",          min:1,   max:4,   step:0.25 },
         { label:"Bomb Size",       key:"bombSize",      min:0.1, max:2,   step:0.1 },
         { label:"Dropped Opacity", key:"droppedOpacity",min:0.1, max:1,   step:0.05, fmt: v => Math.round(v*100)+"%" },
       ].map(({ label, key, min, max, step, fmt }) => (
@@ -166,6 +169,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
         <SettingRow label="Name"   checked={!!(settings.showUtilName ?? true)}   onToggle={() => toggle("showUtilName")} />
         <SettingRow label="Emoji"  checked={!!(settings.showUtilEmoji ?? false)} onToggle={() => toggle("showUtilEmoji")} />
       </div>
+      <SettingRow label="Follow Me"    checked={!!settings.followMe}      onToggle={() => toggle("followMe")} />
       <SettingRow label="Callouts"    checked={!!settings.showCallouts}   onToggle={() => toggle("showCallouts")} />
       <SettingRow label="Death Cross"    checked={!!settings.showDeathCross} onToggle={() => toggle("showDeathCross")} />
       <SettingRow label="Bomb Pulse"     checked={!!settings.bombHighlight}  onToggle={() => toggle("bombHighlight")} />

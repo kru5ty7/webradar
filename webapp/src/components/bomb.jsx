@@ -6,7 +6,7 @@ const Bomb = ({ bombData, mapData, radarImage, localTeam, averageLatency, settin
 
   const bombRef = useRef();
   const bombBounding = (bombRef.current &&
-    bombRef.current.getBoundingClientRect()) || { width: 0, height: 0 };
+    { width: bombRef.current.offsetWidth, height: bombRef.current.offsetHeight }) || { width: 0, height: 0 };
 
   const radarImageBounding = (radarImage !== undefined &&
     radarImage.getBoundingClientRect()) || { width: 0, height: 0 };

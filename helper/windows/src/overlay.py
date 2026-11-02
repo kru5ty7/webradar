@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from pathlib import Path
 
 log = logging.getLogger("radar")
 
@@ -103,6 +104,15 @@ class _OverlayAPI:
                 log.debug("overlay: portable close failed", exc_info=True)
 
 
+
+def _storage_dir() -> str:
+    """Where the overlay webview keeps localStorage (settings), next to config.json."""
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+    d = base / "webview_data"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
 def start(url: str, width: int = MINIMAP_W, height: int = MINIMAP_H,
           x: int = 10, y: int = 10, *, fullscreen: bool = False,
           transparent: bool = False, title: str = "CS2Radar"):
@@ -157,5 +167,8 @@ def start(url: str, width: int = MINIMAP_W, height: int = MINIMAP_H,
 
     win.events.shown += _on_shown
     log.info("overlay: %dx%d @ (%d,%d) -> %s", width, height, x, y, url)
-    webview.start(gui="edgechromium", debug=False)
+    # pywebview defaults to private mode, which forgets localStorage on exit: the
+    # minimap/ESP settings (colours, zoom, toggles) reset every launch.
+    webview.start(gui="edgechromium", debug=False,
+                  private_mode=False, storage_path=_storage_dir())
     log.info("overlay: closed")

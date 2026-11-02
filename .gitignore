@@ -82,3 +82,5 @@ Desktop.ini
 *.swp
 *~
 *log*
+# pywebview overlay storage (minimap/ESP settings)
+helper/*/webview_data/

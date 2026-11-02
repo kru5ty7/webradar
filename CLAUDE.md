@@ -44,7 +44,7 @@ Entry: `webapp/src/app.jsx`
 - `radar.png` — overhead map image
 - `background.webp` — page background (1280 px WebP, ~70 KB; `background.png` is still accepted as a fallback, which is what runtime-extracted maps use)
 - `callouts.json` — named area coordinates for the callout overlay layer
-- `radar_lower.png` + `"lowerBelow": <z>` in `data.json` — optional second level for stacked maps (nuke, vertigo). `Radar` shows the lower image while the local player's z is below the cutoff and gives players on the other level a white halo. Values come from the `verticalsections` in the game's `resource/overviews/<map>.txt`; the lower image is `<map>_lower_radar_psd.vtex_c` (LZ4-compressed BGRA8888, 1024x1024 — swap R and B when decoding).
+- `radar_lower.png` + `"lowerBelow": <z>` in `data.json` — optional second level for stacked maps (nuke, vertigo). `Radar` shows the lower image while the local player's z is below the cutoff and marks players on the other level with a ▲/▼ (`showLevelMarker`, `levelMarkerScale`, `levelMarkerColor`). Values come from the `verticalsections` in the game's `resource/overviews/<map>.txt`; the lower image is `<map>_lower_radar_psd.vtex_c` (LZ4-compressed BGRA8888, 1024x1024 — swap R and B when decoding).
 
 **Radar coordinate conversion**: world (x, y) → radar pixel = `(worldCoord - mapOrigin) / scale`. Both `Player` and `Bomb` components implement this.
 
@@ -57,7 +57,7 @@ Entry: `webapp/src/app.jsx`
 - `PlayerCard` — sidebar card (health, weapons, armor) shown on lg+ screens
 - `Latency` — ping display + settings panel trigger
 
-Settings are persisted to `localStorage` under key `radarSettings` and merged over `DEFAULT_SETTINGS` in `app.jsx`. Notable ones: PLAYERS group (`showAllies`, `showAllyNames`, `showEnemyNames`), utility display (`showUtilCircle`/`Name`/`Emoji`), `zoom` (1–4) and `followMe` (centre the local player). Ally/enemy colour is measured against `getLocalTeam()` (the local player's own team) so a team switch can't invert it. `set_auto_update` is sent to the helper only when `autoUpdate` changes. Settings UI exists twice: `SettingsButton.jsx` (browser) and the popup in `app.jsx` (minimap) — keep them in step.
+Settings are persisted to `localStorage` under key `radarSettings` and merged over `DEFAULT_SETTINGS` in `app.jsx`. Notable ones: PLAYERS group (`showAllies`, `showAllyNames`, `showEnemyNames`, `showLevelMarker`), utility display (`showUtilCircle`/`Name`/`Emoji`), `zoom` (1–4) and `followMe` (centre the local player). Ally/enemy colour is measured against `getLocalTeam()` (the local player's own team) so a team switch can't invert it. `set_auto_update` is sent to the helper only when `autoUpdate` changes. Settings UI exists twice: `SettingsButton.jsx` (browser) and the popup in `app.jsx` (minimap) — keep them in step.
 
 ## helper (Python memory reader)
 

@@ -45,6 +45,9 @@ const DEFAULT_SETTINGS = {
   showAllies: true,
   showEnemyNames: true,
   showAllyNames: false,
+  showLevelMarker: true,  // ▲/▼ on players that are on the other level (nuke, vertigo)
+  levelMarkerScale: 1,
+  levelMarkerColor: "#ffffff",
   showViewCones: false,
   showSmoke: true,
   showMolly: true,
@@ -116,6 +119,7 @@ const SettingRow = ({ label, checked, onToggle }) => (
 
 const BOMB_PRESETS = ["#ff4500","#ffdd00","#ffffff","#00cfff","#c90b0b"];
 const SMOKE_PRESETS = ["#2c3138","#5c636c","#9aa3ad","#e5e7eb","#00cfff"];
+const LEVEL_PRESETS = ["#ffffff","#ffdd00","#00cfff","#ff3df0","#a3ff00"];
 const MOLLY_PRESETS = ["#ff6a00","#ffb000","#ff2d2d","#ff3df0","#a3ff00"];
 
 const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
@@ -142,6 +146,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
         { label:"Dot Size",        key:"dotSize",       min:0.5, max:2,   step:0.1 },
         { label:"Zoom",            key:"zoom",          min:1,   max:4,   step:0.25 },
         { label:"Bomb Size",       key:"bombSize",      min:0.1, max:2,   step:0.1 },
+        { label:"Level Marker Size", key:"levelMarkerScale", min:0.5, max:3, step:0.1 },
         { label:"Dropped Opacity", key:"droppedOpacity",min:0.1, max:1,   step:0.05, fmt: v => Math.round(v*100)+"%" },
       ].map(({ label, key, min, max, step, fmt }) => (
         <div key={key} style={{ marginBottom:8 }}>
@@ -168,6 +173,7 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
         <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
         <SettingRow label="Ally Names"  checked={!!(settings.showAllyNames ?? false)} onToggle={() => toggle("showAllyNames")} />
         <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
+        <SettingRow label="Level Marker" checked={!!(settings.showLevelMarker ?? true)} onToggle={() => toggle("showLevelMarker")} />
       </div>
       <SettingRow label="View Cones"  checked={!!settings.showViewCones}  onToggle={() => toggle("showViewCones")} />
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />
@@ -209,6 +215,19 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
                 border: (settings.mollyColor ?? "#ff6a00")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
           ))}
           <ColorField value={settings.mollyColor ?? "#ff6a00"} onChange={v => setVal("mollyColor", v)} />
+        </div>
+      </div>
+
+      {/* Level marker color */}
+      <div style={{ marginTop:8 }}>
+        <span style={{ color:"#8ab", fontSize:12, display:"block", marginBottom:6 }}>Level Marker Color</span>
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+          {LEVEL_PRESETS.map(c => (
+            <div key={c} onClick={() => setVal("levelMarkerColor", c)}
+              style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
+                border: (settings.levelMarkerColor ?? "#ffffff")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
+          ))}
+          <ColorField value={settings.levelMarkerColor ?? "#ffffff"} onChange={v => setVal("levelMarkerColor", v)} />
         </div>
       </div>
 

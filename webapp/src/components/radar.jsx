@@ -34,7 +34,7 @@ const Radar = ({
     };
   }, [imgEl]);
 
-  // Show the level the local player is on; players on the other level stay fully visible with a white halo.
+  // Show the level the local player is on; players on the other level get a ▲/▼ marker (see Player).
   const local = playerArray.find((p) => p.m_is_local);
   const lower = isLowerLevel(mapData, local?.m_position?.z);
   const radarSrc = lower ? radarImage.replace(/radar\.png$/, "radar_lower.png") : radarImage;
@@ -75,25 +75,22 @@ const Radar = ({
         enabled={settings?.showCallouts ?? true}
       />
 
-      {playerArray.map((player) => (
-        <div
-          key={player.m_idx}
-          style={{
-            position: "absolute", inset: 0,
-            filter: isLowerLevel(mapData, player.m_position?.z) !== lower
-              ? "drop-shadow(0 0 2px #fff) drop-shadow(0 0 2px #fff)" : undefined,
-          }}
-        >
+      {playerArray.map((player) => {
+        // Players on the other level of a stacked map get a ▲/▼ marker on their dot.
+        const theirLower = isLowerLevel(mapData, player.m_position?.z);
+        return (
           <Player
+            key={player.m_idx}
             playerData={player}
             mapData={mapData}
             radarImage={radarImageEl}
             localTeam={localTeam}
             averageLatency={averageLatency}
             settings={settings}
+            otherLevel={theirLower !== lower ? (theirLower ? "lower" : "upper") : null}
           />
-        </div>
-      ))}
+        );
+      })}
 
       {bombData && bombData.x !== undefined && (
         <Bomb

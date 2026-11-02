@@ -61,6 +61,24 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
               />
             </div>
 
+            {/* Level marker size */}
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-radar-secondary text-sm">Level Marker Size</span>
+                <span id="lbl-levelMarkerScale" className="text-radar-primary text-sm font-mono">{(settings.levelMarkerScale ?? 1).toFixed(1)}x</span>
+              </div>
+              <input
+                type="range" min="0.5" max="3" step="0.1"
+                defaultValue={settings.levelMarkerScale ?? 1}
+                onInput={e => {
+                  const v = parseFloat(e.target.value);
+                  document.getElementById("lbl-levelMarkerScale").textContent = v.toFixed(1) + "x";
+                  onSettingsChange({ ...settings, levelMarkerScale: v });
+                }}
+                className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-radar-primary"
+              />
+            </div>
+
             {/* Bomb size */}
             <div>
               <div className="flex justify-between items-center mb-2">
@@ -106,6 +124,7 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                 <Toggle label="Show Allies"    checked={!!(settings.showAllies ?? true)}        onToggle={() => toggle("showAllies")} />
                 <Toggle label="Ally Names"     checked={!!(settings.showAllyNames ?? false)}    onToggle={() => toggle("showAllyNames")} />
                 <Toggle label="Enemy Names"    checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
+                <Toggle label="Level Marker"   checked={!!(settings.showLevelMarker ?? true)}   onToggle={() => toggle("showLevelMarker")} />
               </div>
               <Toggle label="View Cones"       checked={!!settings.showViewCones}               onToggle={() => toggle("showViewCones")} />
               <Toggle label="💨 Smoke"         checked={!!settings.showSmoke}                  onToggle={() => toggle("showSmoke")} />
@@ -176,6 +195,26 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                   />
                 ))}
                 <ColorField value={settings.mollyColor ?? "#ff6a00"} onChange={v => onSettingsChange({ ...settings, mollyColor: v })} size={22} />
+              </div>
+            </div>
+
+            {/* Level marker color */}
+            <div className="pt-1">
+              <span className="text-radar-secondary text-sm block mb-2">Level Marker Color</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {["#ffffff","#ffdd00","#00cfff","#ff3df0","#a3ff00"].map(c => (
+                  <button
+                    key={c}
+                    onClick={() => onSettingsChange({ ...settings, levelMarkerColor: c })}
+                    style={{
+                      background: c, width: 22, height: 22, borderRadius: "50%",
+                      border: (settings.levelMarkerColor ?? "#ffffff") === c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)",
+                      cursor: "pointer", flexShrink: 0,
+                    }}
+                    title={c}
+                  />
+                ))}
+                <ColorField value={settings.levelMarkerColor ?? "#ffffff"} onChange={v => onSettingsChange({ ...settings, levelMarkerColor: v })} size={22} />
               </div>
             </div>
 

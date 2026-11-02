@@ -14,7 +14,7 @@ const calculatePlayerRotation = (playerData) => {
   return playerRotations[idx];
 };
 
-const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, settings }) => {
+const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, settings, otherLevel }) => {
   const [lastKnownPosition, setLastKnownPosition] = useState(null);
   const radarPosition = getRadarPosition(mapData, playerData.m_position) || { x: 0, y: 0 };
   const invalidPosition = radarPosition.x <= 0 && radarPosition.y <= 0;
@@ -80,6 +80,22 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
           <span className="text-xs text-white" style={{ textShadow: "0 0 3px #000, 0 0 3px #000" }}>
             {playerData.m_name}
           </span>
+        </div>
+      )}
+
+      {/* Stacked maps: ▲ / ▼ when this player is on the other level than you. */}
+      {otherLevel && !playerData.m_is_dead && (settings.showLevelMarker ?? true) && (
+        <div
+          className="absolute"
+          style={{
+            left: "100%", top: 0, transform: "translate(-20%, -70%)",
+            fontSize: `${scaledSize * 0.9 * (settings.levelMarkerScale ?? 1)}px`,
+            lineHeight: 1, fontWeight: 700, pointerEvents: "none", zIndex: 10,
+            color: settings.levelMarkerColor ?? "#ffffff",
+            textShadow: "0 0 2px #000, 0 0 2px #000, 0 0 3px #000",
+          }}
+        >
+          {otherLevel === "upper" ? "▲" : "▼"}
         </div>
       )}
 

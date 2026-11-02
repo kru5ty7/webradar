@@ -83,8 +83,8 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
         </div>
       )}
 
-      {/* Stacked maps: ▲ / ▼ when this player is on the other level than you. */}
-      {otherLevel && !playerData.m_is_dead && (settings.showLevelMarker ?? true) && (
+      {/* Stacked maps: ▲ / ▼ when this player is on the other level than you (separate ally / enemy toggles). */}
+      {otherLevel && !playerData.m_is_dead && (isAlly ? (settings.showAllyLevelMarker ?? true) : (settings.showEnemyLevelMarker ?? true)) && (
         <div
           className="absolute"
           style={{

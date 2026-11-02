@@ -45,7 +45,8 @@ const DEFAULT_SETTINGS = {
   showAllies: true,
   showEnemyNames: true,
   showAllyNames: false,
-  showLevelMarker: true,  // ▲/▼ on players that are on the other level (nuke, vertigo)
+  showEnemyLevelMarker: true, // ▲/▼ on players on the other level (nuke, vertigo)
+  showAllyLevelMarker: true,
   levelMarkerScale: 1,
   levelMarkerColor: "#ffffff",
   showViewCones: false,
@@ -173,7 +174,8 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
         <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
         <SettingRow label="Ally Names"  checked={!!(settings.showAllyNames ?? false)} onToggle={() => toggle("showAllyNames")} />
         <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
-        <SettingRow label="Level Marker" checked={!!(settings.showLevelMarker ?? true)} onToggle={() => toggle("showLevelMarker")} />
+        <SettingRow label="Enemy Level Marker" checked={!!(settings.showEnemyLevelMarker ?? true)} onToggle={() => toggle("showEnemyLevelMarker")} />
+        <SettingRow label="Ally Level Marker"  checked={!!(settings.showAllyLevelMarker ?? true)}  onToggle={() => toggle("showAllyLevelMarker")} />
       </div>
       <SettingRow label="View Cones"  checked={!!settings.showViewCones}  onToggle={() => toggle("showViewCones")} />
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />

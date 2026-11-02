@@ -124,7 +124,8 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                 <Toggle label="Show Allies"    checked={!!(settings.showAllies ?? true)}        onToggle={() => toggle("showAllies")} />
                 <Toggle label="Ally Names"     checked={!!(settings.showAllyNames ?? false)}    onToggle={() => toggle("showAllyNames")} />
                 <Toggle label="Enemy Names"    checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
-                <Toggle label="Level Marker"   checked={!!(settings.showLevelMarker ?? true)}   onToggle={() => toggle("showLevelMarker")} />
+                <Toggle label="Enemy Level Marker" checked={!!(settings.showEnemyLevelMarker ?? true)} onToggle={() => toggle("showEnemyLevelMarker")} />
+                <Toggle label="Ally Level Marker"  checked={!!(settings.showAllyLevelMarker ?? true)}  onToggle={() => toggle("showAllyLevelMarker")} />
               </div>
               <Toggle label="View Cones"       checked={!!settings.showViewCones}               onToggle={() => toggle("showViewCones")} />
               <Toggle label="💨 Smoke"         checked={!!settings.showSmoke}                  onToggle={() => toggle("showSmoke")} />

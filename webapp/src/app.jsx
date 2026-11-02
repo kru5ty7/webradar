@@ -45,10 +45,11 @@ const DEFAULT_SETTINGS = {
   showAllies: true,
   showEnemyNames: true,
   showAllyNames: false,
-  showEnemyLevelMarker: true, // ▲/▼ on players on the other level (nuke, vertigo)
-  showAllyLevelMarker: true,
-  levelMarkerScale: 1,
-  levelMarkerColor: "#ffffff",
+  showEnemyHeightMarker: true, // ▲/▼ on players higher / lower than you
+  showAllyHeightMarker: true,
+  heightMarkerScale: 1,
+  heightMarkerThreshold: 48, // units above/below you before the marker shows (boost = 54-72)
+  heightMarkerColor: "#ffffff",
   showViewCones: false,
   showSmoke: true,
   showMolly: true,
@@ -147,7 +148,8 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
         { label:"Dot Size",        key:"dotSize",       min:0.5, max:2,   step:0.1 },
         { label:"Zoom",            key:"zoom",          min:1,   max:4,   step:0.25 },
         { label:"Bomb Size",       key:"bombSize",      min:0.1, max:2,   step:0.1 },
-        { label:"Level Marker Size", key:"levelMarkerScale", min:0.5, max:3, step:0.1 },
+        { label:"Height Marker Size", key:"heightMarkerScale", min:0.5, max:3, step:0.1 },
+        { label:"Height Threshold", key:"heightMarkerThreshold", min:16, max:200, step:4, fmt: v => Math.round(v)+" u" },
         { label:"Dropped Opacity", key:"droppedOpacity",min:0.1, max:1,   step:0.05, fmt: v => Math.round(v*100)+"%" },
       ].map(({ label, key, min, max, step, fmt }) => (
         <div key={key} style={{ marginBottom:8 }}>
@@ -174,8 +176,8 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
         <SettingRow label="Show Allies" checked={!!(settings.showAllies ?? true)} onToggle={() => toggle("showAllies")} />
         <SettingRow label="Ally Names"  checked={!!(settings.showAllyNames ?? false)} onToggle={() => toggle("showAllyNames")} />
         <SettingRow label="Enemy Names" checked={!!settings.showEnemyNames} onToggle={() => toggle("showEnemyNames")} />
-        <SettingRow label="Enemy Level Marker" checked={!!(settings.showEnemyLevelMarker ?? true)} onToggle={() => toggle("showEnemyLevelMarker")} />
-        <SettingRow label="Ally Level Marker"  checked={!!(settings.showAllyLevelMarker ?? true)}  onToggle={() => toggle("showAllyLevelMarker")} />
+        <SettingRow label="Enemy Height Marker" checked={!!(settings.showEnemyHeightMarker ?? true)} onToggle={() => toggle("showEnemyHeightMarker")} />
+        <SettingRow label="Ally Height Marker"  checked={!!(settings.showAllyHeightMarker ?? true)}  onToggle={() => toggle("showAllyHeightMarker")} />
       </div>
       <SettingRow label="View Cones"  checked={!!settings.showViewCones}  onToggle={() => toggle("showViewCones")} />
       <SettingRow label="Smoke"       checked={!!settings.showSmoke}      onToggle={() => toggle("showSmoke")} />
@@ -222,14 +224,14 @@ const OverlaySettingsPopup = ({ settings, setSettings, onClose }) => {
 
       {/* Level marker color */}
       <div style={{ marginTop:8 }}>
-        <span style={{ color:"#8ab", fontSize:12, display:"block", marginBottom:6 }}>Level Marker Color</span>
+        <span style={{ color:"#8ab", fontSize:12, display:"block", marginBottom:6 }}>Height Marker Color</span>
         <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
           {LEVEL_PRESETS.map(c => (
-            <div key={c} onClick={() => setVal("levelMarkerColor", c)}
+            <div key={c} onClick={() => setVal("heightMarkerColor", c)}
               style={{ width:20, height:20, borderRadius:"50%", background:c, cursor:"pointer",
-                border: (settings.levelMarkerColor ?? "#ffffff")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
+                border: (settings.heightMarkerColor ?? "#ffffff")===c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)" }} />
           ))}
-          <ColorField value={settings.levelMarkerColor ?? "#ffffff"} onChange={v => setVal("levelMarkerColor", v)} />
+          <ColorField value={settings.heightMarkerColor ?? "#ffffff"} onChange={v => setVal("heightMarkerColor", v)} />
         </div>
       </div>
 

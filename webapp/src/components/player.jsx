@@ -14,7 +14,7 @@ const calculatePlayerRotation = (playerData) => {
   return playerRotations[idx];
 };
 
-const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, settings, otherLevel }) => {
+const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, settings, heightMarker }) => {
   const [lastKnownPosition, setLastKnownPosition] = useState(null);
   const radarPosition = getRadarPosition(mapData, playerData.m_position) || { x: 0, y: 0 };
   const invalidPosition = radarPosition.x <= 0 && radarPosition.y <= 0;
@@ -83,19 +83,19 @@ const Player = ({ playerData, mapData, radarImage, localTeam, averageLatency, se
         </div>
       )}
 
-      {/* Stacked maps: ▲ / ▼ when this player is on the other level than you (separate ally / enemy toggles). */}
-      {otherLevel && !playerData.m_is_dead && (isAlly ? (settings.showAllyLevelMarker ?? true) : (settings.showEnemyLevelMarker ?? true)) && (
+      {/* Stacked maps: ▲ / ▼ when this player is higher / lower than you (other level, boost, high ground); ally / enemy toggles. */}
+      {heightMarker && !playerData.m_is_dead && (isAlly ? (settings.showAllyHeightMarker ?? true) : (settings.showEnemyHeightMarker ?? true)) && (
         <div
           className="absolute"
           style={{
             left: "100%", top: 0, transform: "translate(-20%, -70%)",
-            fontSize: `${scaledSize * 0.9 * (settings.levelMarkerScale ?? 1)}px`,
+            fontSize: `${scaledSize * 0.9 * (settings.heightMarkerScale ?? 1)}px`,
             lineHeight: 1, fontWeight: 700, pointerEvents: "none", zIndex: 10,
-            color: settings.levelMarkerColor ?? "#ffffff",
+            color: settings.heightMarkerColor ?? "#ffffff",
             textShadow: "0 0 2px #000, 0 0 2px #000, 0 0 3px #000",
           }}
         >
-          {otherLevel === "upper" ? "▲" : "▼"}
+          {heightMarker === "above" ? "▲" : "▼"}
         </div>
       )}
 

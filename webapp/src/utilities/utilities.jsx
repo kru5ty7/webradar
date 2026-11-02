@@ -13,6 +13,18 @@ export const getLocalTeam = (players, fallback) => {
 export const isLowerLevel = (mapData, z) =>
   mapData?.lowerBelow !== undefined && typeof z === "number" && z < mapData.lowerBelow;
 
+// Where `player` stands relative to `ref` (normally you): "above", "below" or null.
+// A different level of a stacked map always counts; otherwise it needs at least
+// `threshold` units of height difference (a boosted player is ~54-72 above).
+export const getHeightRelation = (mapData, player, ref, threshold = 48) => {
+  const z = player?.m_position?.z, rz = ref?.m_position?.z;
+  if (!ref || player === ref || typeof z !== "number" || typeof rz !== "number") return null;
+  const lower = isLowerLevel(mapData, z);
+  if (lower !== isLowerLevel(mapData, rz)) return lower ? "below" : "above";
+  const dz = z - rz;
+  return dz >= threshold ? "above" : dz <= -threshold ? "below" : null;
+};
+
 export const getRadarPosition = (mapData, entityCoords) => {
   if (!entityCoords.x || !entityCoords.y) {
     return { x: 0, y: 0 };

@@ -34,7 +34,7 @@ const Radar = ({
     };
   }, [imgEl]);
 
-  // Show the level the local player is on; players on the other level are dimmed.
+  // Show the level the local player is on; players on the other level stay fully visible with a white halo.
   const local = playerArray.find((p) => p.m_is_local);
   const lower = isLowerLevel(mapData, local?.m_position?.z);
   const radarSrc = lower ? radarImage.replace(/radar\.png$/, "radar_lower.png") : radarImage;
@@ -80,7 +80,8 @@ const Radar = ({
           key={player.m_idx}
           style={{
             position: "absolute", inset: 0,
-            opacity: isLowerLevel(mapData, player.m_position?.z) !== lower ? 0.35 : undefined,
+            filter: isLowerLevel(mapData, player.m_position?.z) !== lower
+              ? "drop-shadow(0 0 2px #fff) drop-shadow(0 0 2px #fff)" : undefined,
           }}
         >
           <Player

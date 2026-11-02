@@ -64,16 +64,34 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
             {/* Level marker size */}
             <div>
               <div className="flex justify-between items-center mb-2">
-                <span className="text-radar-secondary text-sm">Level Marker Size</span>
-                <span id="lbl-levelMarkerScale" className="text-radar-primary text-sm font-mono">{(settings.levelMarkerScale ?? 1).toFixed(1)}x</span>
+                <span className="text-radar-secondary text-sm">Height Marker Size</span>
+                <span id="lbl-heightMarkerScale" className="text-radar-primary text-sm font-mono">{(settings.heightMarkerScale ?? 1).toFixed(1)}x</span>
               </div>
               <input
                 type="range" min="0.5" max="3" step="0.1"
-                defaultValue={settings.levelMarkerScale ?? 1}
+                defaultValue={settings.heightMarkerScale ?? 1}
                 onInput={e => {
                   const v = parseFloat(e.target.value);
-                  document.getElementById("lbl-levelMarkerScale").textContent = v.toFixed(1) + "x";
-                  onSettingsChange({ ...settings, levelMarkerScale: v });
+                  document.getElementById("lbl-heightMarkerScale").textContent = v.toFixed(1) + "x";
+                  onSettingsChange({ ...settings, heightMarkerScale: v });
+                }}
+                className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-radar-primary"
+              />
+            </div>
+
+            {/* Height marker threshold */}
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-radar-secondary text-sm">Height Threshold</span>
+                <span id="lbl-heightMarkerThreshold" className="text-radar-primary text-sm font-mono">{Math.round(settings.heightMarkerThreshold ?? 48)} u</span>
+              </div>
+              <input
+                type="range" min="16" max="200" step="4"
+                defaultValue={settings.heightMarkerThreshold ?? 48}
+                onInput={e => {
+                  const v = parseFloat(e.target.value);
+                  document.getElementById("lbl-heightMarkerThreshold").textContent = Math.round(v) + " u";
+                  onSettingsChange({ ...settings, heightMarkerThreshold: v });
                 }}
                 className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-radar-primary"
               />
@@ -124,8 +142,8 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
                 <Toggle label="Show Allies"    checked={!!(settings.showAllies ?? true)}        onToggle={() => toggle("showAllies")} />
                 <Toggle label="Ally Names"     checked={!!(settings.showAllyNames ?? false)}    onToggle={() => toggle("showAllyNames")} />
                 <Toggle label="Enemy Names"    checked={!!settings.showEnemyNames}              onToggle={() => toggle("showEnemyNames")} />
-                <Toggle label="Enemy Level Marker" checked={!!(settings.showEnemyLevelMarker ?? true)} onToggle={() => toggle("showEnemyLevelMarker")} />
-                <Toggle label="Ally Level Marker"  checked={!!(settings.showAllyLevelMarker ?? true)}  onToggle={() => toggle("showAllyLevelMarker")} />
+                <Toggle label="Enemy Height Marker" checked={!!(settings.showEnemyHeightMarker ?? true)} onToggle={() => toggle("showEnemyHeightMarker")} />
+                <Toggle label="Ally Height Marker"  checked={!!(settings.showAllyHeightMarker ?? true)}  onToggle={() => toggle("showAllyHeightMarker")} />
               </div>
               <Toggle label="View Cones"       checked={!!settings.showViewCones}               onToggle={() => toggle("showViewCones")} />
               <Toggle label="💨 Smoke"         checked={!!settings.showSmoke}                  onToggle={() => toggle("showSmoke")} />
@@ -201,21 +219,21 @@ const SettingsButton = ({ settings, onSettingsChange }) => {
 
             {/* Level marker color */}
             <div className="pt-1">
-              <span className="text-radar-secondary text-sm block mb-2">Level Marker Color</span>
+              <span className="text-radar-secondary text-sm block mb-2">Height Marker Color</span>
               <div className="flex items-center gap-2 flex-wrap">
                 {["#ffffff","#ffdd00","#00cfff","#ff3df0","#a3ff00"].map(c => (
                   <button
                     key={c}
-                    onClick={() => onSettingsChange({ ...settings, levelMarkerColor: c })}
+                    onClick={() => onSettingsChange({ ...settings, heightMarkerColor: c })}
                     style={{
                       background: c, width: 22, height: 22, borderRadius: "50%",
-                      border: (settings.levelMarkerColor ?? "#ffffff") === c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)",
+                      border: (settings.heightMarkerColor ?? "#ffffff") === c ? "2px solid #fff" : "2px solid rgba(255,255,255,0.25)",
                       cursor: "pointer", flexShrink: 0,
                     }}
                     title={c}
                   />
                 ))}
-                <ColorField value={settings.levelMarkerColor ?? "#ffffff"} onChange={v => onSettingsChange({ ...settings, levelMarkerColor: v })} size={22} />
+                <ColorField value={settings.heightMarkerColor ?? "#ffffff"} onChange={v => onSettingsChange({ ...settings, heightMarkerColor: v })} size={22} />
               </div>
             </div>
 

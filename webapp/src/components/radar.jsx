@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { getRadarPosition } from "../utilities/utilities";
+import { getRadarPosition, isLowerLevel } from "../utilities/utilities";
 import Player from "./player";
 import Bomb from "./bomb";
 import GrenadeLayer from "./GrenadeLayer";
@@ -34,6 +34,11 @@ const Radar = ({
     };
   }, [imgEl]);
 
+  // Show the level the local player is on; players on the other level get a ▲/▼ marker (see Player).
+  const local = playerArray.find((p) => p.m_is_local);
+  const lower = isLowerLevel(mapData, local?.m_position?.z);
+  const radarSrc = lower ? radarImage.replace(/radar\.png$/, "radar_lower.png") : radarImage;
+
   const zoom = Math.max(1, settings?.zoom ?? 1);
   const follow = settings?.followMe ?? false;
   const me = follow ? playerArray.find((p) => p.m_is_local && !p.m_is_dead) : null;
@@ -62,7 +67,7 @@ const Radar = ({
           transition: "transform 150ms linear",
         }}
       >
-      <img ref={setRadarImageEl} className="w-full h-auto" src={radarImage} />
+      <img ref={setRadarImageEl} className="w-full h-auto" src={radarSrc} />
 
       <CalloutLayer
         mapName={mapData?.name}
@@ -70,17 +75,22 @@ const Radar = ({
         enabled={settings?.showCallouts ?? true}
       />
 
-      {playerArray.map((player) => (
-        <Player
-          key={player.m_idx}
-          playerData={player}
-          mapData={mapData}
-          radarImage={radarImageEl}
-          localTeam={localTeam}
-          averageLatency={averageLatency}
-          settings={settings}
-        />
-      ))}
+      {playerArray.map((player) => {
+        // Players on the other level of a stacked map get a ▲/▼ marker on their dot.
+        const theirLower = isLowerLevel(mapData, player.m_position?.z);
+        return (
+          <Player
+            key={player.m_idx}
+            playerData={player}
+            mapData={mapData}
+            radarImage={radarImageEl}
+            localTeam={localTeam}
+            averageLatency={averageLatency}
+            settings={settings}
+            otherLevel={theirLower !== lower ? (theirLower ? "lower" : "upper") : null}
+          />
+        );
+      })}
 
       {bombData && bombData.x !== undefined && (
         <Bomb

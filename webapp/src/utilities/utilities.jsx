@@ -8,6 +8,11 @@ export const getLocalTeam = (players, fallback) => {
   return me ? me.m_team : fallback;
 };
 
+// Multi-level maps (nuke, vertigo) ship a second radar image for everything
+// below `lowerBelow` (z). Maps without it always use the single image.
+export const isLowerLevel = (mapData, z) =>
+  mapData?.lowerBelow !== undefined && typeof z === "number" && z < mapData.lowerBelow;
+
 export const getRadarPosition = (mapData, entityCoords) => {
   if (!entityCoords.x || !entityCoords.y) {
     return { x: 0, y: 0 };

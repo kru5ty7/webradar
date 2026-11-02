@@ -44,6 +44,7 @@ Entry: `webapp/src/app.jsx`
 - `radar.png` — overhead map image
 - `background.webp` — page background (1280 px WebP, ~70 KB; `background.png` is still accepted as a fallback, which is what runtime-extracted maps use)
 - `callouts.json` — named area coordinates for the callout overlay layer
+- `radar_lower.png` + `"lowerBelow": <z>` in `data.json` — optional second level for stacked maps (nuke, vertigo). `Radar` shows the lower image while the local player's z is below the cutoff and dims players on the other level. Values come from the `verticalsections` in the game's `resource/overviews/<map>.txt`; the lower image is `<map>_lower_radar_psd.vtex_c` (LZ4-compressed RGBA8888, 1024x1024).
 
 **Radar coordinate conversion**: world (x, y) → radar pixel = `(worldCoord - mapOrigin) / scale`. Both `Player` and `Bomb` components implement this.
 

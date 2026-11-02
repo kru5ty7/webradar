@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { getRadarPosition } from "../utilities/utilities";
+import { getRadarPosition, isLowerLevel } from "../utilities/utilities";
 import Player from "./player";
 import Bomb from "./bomb";
 import GrenadeLayer from "./GrenadeLayer";
@@ -34,6 +34,11 @@ const Radar = ({
     };
   }, [imgEl]);
 
+  // Show the level the local player is on; players on the other level are dimmed.
+  const local = playerArray.find((p) => p.m_is_local);
+  const lower = isLowerLevel(mapData, local?.m_position?.z);
+  const radarSrc = lower ? radarImage.replace(/radar\.png$/, "radar_lower.png") : radarImage;
+
   const zoom = Math.max(1, settings?.zoom ?? 1);
   const follow = settings?.followMe ?? false;
   const me = follow ? playerArray.find((p) => p.m_is_local && !p.m_is_dead) : null;
@@ -62,7 +67,7 @@ const Radar = ({
           transition: "transform 150ms linear",
         }}
       >
-      <img ref={setRadarImageEl} className="w-full h-auto" src={radarImage} />
+      <img ref={setRadarImageEl} className="w-full h-auto" src={radarSrc} />
 
       <CalloutLayer
         mapName={mapData?.name}
@@ -71,15 +76,22 @@ const Radar = ({
       />
 
       {playerArray.map((player) => (
-        <Player
+        <div
           key={player.m_idx}
-          playerData={player}
-          mapData={mapData}
-          radarImage={radarImageEl}
-          localTeam={localTeam}
-          averageLatency={averageLatency}
-          settings={settings}
-        />
+          style={{
+            position: "absolute", inset: 0,
+            opacity: isLowerLevel(mapData, player.m_position?.z) !== lower ? 0.35 : undefined,
+          }}
+        >
+          <Player
+            playerData={player}
+            mapData={mapData}
+            radarImage={radarImageEl}
+            localTeam={localTeam}
+            averageLatency={averageLatency}
+            settings={settings}
+          />
+        </div>
       ))}
 
       {bombData && bombData.x !== undefined && (

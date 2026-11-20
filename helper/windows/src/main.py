@@ -2665,11 +2665,48 @@ def _maps_cache_path() -> Path:
 
 
 # ── map extractor ─────────────────────────────────────────────────────────────
+def _vtex_to_png(data: bytes) -> bytes | None:
+    """Decode a Source 2 .vtex_c (single-mip BGRA8888 / RGBA8888 / DXT5) to PNG bytes."""
+    import io
+    import lz4.block
+    from PIL import Image
+
+    file_size, _hv, _ver, blk_off, blk_cnt = struct.unpack_from("<IHHII", data, 0)
+    pos = 8 + blk_off
+    data_start = None
+    for _ in range(blk_cnt):
+        if data[pos:pos + 4] == b"DATA":
+            data_start = pos + 4 + struct.unpack_from("<I", data, pos + 4)[0]
+        pos += 12
+    if data_start is None:
+        return None
+    width, height = struct.unpack_from("<HH", data, data_start + 20)
+    fmt, mips = struct.unpack_from("<BB", data, data_start + 26)
+    if mips != 1 or fmt not in (2, 4, 28):
+        return None
+    # Pixel data follows the resource header, LZ4-compressed.
+    pixels = data[file_size:]
+    expected = width * height * (1 if fmt == 2 else 4)
+    if len(pixels) != expected:
+        pixels = lz4.block.decompress(pixels, uncompressed_size=expected)
+    if fmt == 2:
+        img = Image.frombytes("RGBA", (width, height), pixels, "bcn", 3)
+    else:
+        img = Image.frombytes("RGBA", (width, height), pixels, "raw",
+                              "BGRA" if fmt == 28 else "RGBA")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
 class MapExtractor:
     """Reads CS2 overview files and extracts map data on demand."""
 
-    def __init__(self, cache_dir: Path):
+    def __init__(self, cache_dir: Path, bundled_dir: Path | None = None):
         self.cache_dir = cache_dir
+        # Maps shipped inside the exe; never extract over them (the HTTP
+        # server prefers cache_dir, which would shadow their callouts/levels).
+        self.bundled_dir = bundled_dir
         self.cs2_dir   = self._find_cs2()
         self._seen: set[str] = set()
         if self.cs2_dir:
@@ -2724,7 +2761,7 @@ class MapExtractor:
             # What we want: (ext, path, name)
             targets = {
                 ("txt", "resource/overviews", map_name),
-                ("png", "resource/overviews", f"{map_name}_radar"),
+                ("vtex_c", "panorama/images/overheadmaps", f"{map_name}_radar_psd"),
             }
             found = {}
 
@@ -2762,15 +2799,18 @@ class MapExtractor:
                     return preload + f.read(entry_len)
 
             txt_key = ("txt", "resource/overviews", map_name)
-            png_key = ("png", "resource/overviews", f"{map_name}_radar")
+            png_key = ("vtex_c", "panorama/images/overheadmaps", f"{map_name}_radar_psd")
 
             if txt_key not in found or png_key not in found:
-                log.warning("map extractor: %s not found in VPK (txt=%s png=%s)",
+                log.warning("map extractor: %s not found in VPK (overview=%s radar=%s)",
                             map_name, txt_key in found, png_key in found)
                 return False
 
             txt_bytes = _read_entry(*found[txt_key])
-            png_bytes = _read_entry(*found[png_key])
+            png_bytes = _vtex_to_png(_read_entry(*found[png_key]))
+            if not png_bytes:
+                log.warning("map extractor: unsupported radar texture format for %s", map_name)
+                return False
 
             overview = self._parse_overview_text(txt_bytes.decode("utf-8", errors="ignore"))
             if not overview:
@@ -2800,6 +2840,11 @@ class MapExtractor:
 
         out = self.cache_dir / map_name
         if (out / "data.json").exists() and (out / "radar.png").exists():
+            self._seen.add(map_name)
+            return True
+
+        if self.bundled_dir and (self.bundled_dir / map_name / "data.json").exists() \
+                and (self.bundled_dir / map_name / "radar.png").exists():
             self._seen.add(map_name)
             return True
 
@@ -3055,7 +3100,7 @@ async def _run_async():
 
         static_dir = _static_path()
         maps_cache = _maps_cache_path()
-        extractor  = MapExtractor(maps_cache)
+        extractor  = MapExtractor(maps_cache, Path(static_dir) / "data" if static_dir else None)
         if static_dir:
             try:
                 _start_http(static_dir, maps_cache)

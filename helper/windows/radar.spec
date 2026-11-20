@@ -25,6 +25,7 @@ a = Analysis(
         'webview', 'webview.platforms', *_webview_platforms,
         'webview.js', 'webview.event', 'webview.util', 'webview.screen',
         'webview.window', 'webview.menu',
+        'lz4', 'lz4.block', 'PIL', 'PIL.Image',
     ],
     hookspath=[],
     hooksconfig={},

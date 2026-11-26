@@ -1,0 +1,27 @@
+{
+  "x": -11240.0,
+  "y": 9944.0,
+  "scale": 18.910156,
+  "rooms": [
+    {"name": "room104", "x": 1744.0, "y": 7836.0, "scale": 2.484375, "bounds": {"minX": 1909, "maxX": 4148, "minY": 6058, "maxY": 7142}},
+    {"name": "room101", "x": 1376.0, "y": 3520.0, "scale": 1.78125, "bounds": {"minX": 1409, "maxX": 3163, "minY": 1937, "maxY": 3305}},
+    {"name": "room102", "x": 1263.0, "y": -841.0, "scale": 1.974121, "bounds": {"minX": 1436, "maxX": 3081, "minY": -2452, "maxY": -1206}},
+    {"name": "room103", "x": 1263.0, "y": -3837.0, "scale": 2.369141, "bounds": {"minX": 1440, "maxX": 3500, "minY": -5707, "maxY": -4434}},
+    {"name": "room201", "x": -1748.0, "y": -3808.0, "scale": 2.15625, "bounds": {"minX": -1341, "maxX": 214, "minY": -5872, "maxY": -4010}},
+    {"name": "room202", "x": -4656.0, "y": -3968.0, "scale": 1.59375, "bounds": {"minX": -4680, "maxX": -3105, "minY": -5624, "maxY": -4008}},
+    {"name": "room204", "x": -10880.0, "y": -3136.0, "scale": 2.90625, "bounds": {"minX": -10863, "maxX": -7967, "minY": -5264, "maxY": -3990}},
+    {"name": "room205", "x": -2336.0, "y": -304.0, "scale": 2.375, "bounds": {"minX": -2324, "maxX": 61, "minY": -2264, "maxY": -802}},
+    {"name": "room206", "x": -6008.0, "y": 8.0, "scale": 2.90625, "bounds": {"minX": -5683, "maxX": -3313, "minY": -1728, "maxY": -933}},
+    {"name": "room207", "x": -10560.0, "y": -224.0, "scale": 3.15625, "bounds": {"minX": -10445, "maxX": -7465, "minY": -2593, "maxY": -1058}},
+    {"name": "room208", "x": -2464.0, "y": 3604.0, "scale": 2.453125, "bounds": {"minX": -2324, "maxX": -110, "minY": 1801, "maxY": 2885}},
+    {"name": "room209", "x": -5504.0, "y": 3296.0, "scale": 1.59375, "bounds": {"minX": -5450, "maxX": -3896, "minY": 1935, "maxY": 3008}},
+    {"name": "room203", "x": -9400.0, "y": 3879.0, "scale": 2.647462, "bounds": {"minX": -9130, "maxX": -6914, "minY": 1771, "maxY": 3323}},
+    {"name": "room211", "x": -3104.0, "y": 7088.0, "scale": 2.40625, "bounds": {"minX": -3073, "maxX": -746, "minY": 5271, "maxY": 6498}},
+    {"name": "room212", "x": -6176.0, "y": 7596.0, "scale": 2.297851, "bounds": {"minX": -6087, "maxX": -3955, "minY": 6042, "maxY": 6765}},
+    {"name": "room210", "x": -10088.0, "y": 7424.0, "scale": 3.859375, "bounds": {"minX": -8916, "maxX": -6838, "minY": 3919, "maxY": 7101}},
+    {"name": "room401", "x": 4544.0, "y": -528.0, "scale": 2.5, "bounds": {"minX": 4550, "maxX": 7098, "minY": -2940, "maxY": -676}},
+    {"name": "room301", "x": 4608.0, "y": 5696.0, "scale": 2.59375, "bounds": {"minX": 4693, "maxX": 7257, "minY": 3405, "maxY": 5279}},
+    {"name": "roomparty", "x": 454.0, "y": 1184.0, "scale": 1.585938, "bounds": {"minX": 869, "maxX": 1721, "minY": -301, "maxY": 1075}},
+    {"name": "convoy", "x": -6720.0, "y": -5952.0, "scale": 4.562499, "bounds": {"minX": -6429, "maxX": -2170, "minY": -8572, "maxY": -8063}}
+  ]
+}

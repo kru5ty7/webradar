@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { getRadarPosition, getHeightRelation, isLowerLevel } from "../utilities/utilities";
+import { getRadarView, isShown } from "../utilities/rooms";
 import Player from "./player";
 import Bomb from "./bomb";
 import GrenadeLayer from "./GrenadeLayer";
@@ -34,14 +35,21 @@ const Radar = ({
     };
   }, [imgEl]);
 
+  // Maps made of arenas (Rush) draw only the one being played, and nothing
+  // outside it. Other maps come back unchanged.
+  const view = getRadarView(mapData, playerArray);
+  const viewData = view.mapData;
+  const roomKey = view.room?.name ?? "";
+  const shown = (pos) => isShown(view.room, pos);
+
   // Show the level the local player is on; players above / below you get a ▲/▼ marker (see Player).
   const local = playerArray.find((p) => p.m_is_local);
-  const lower = isLowerLevel(mapData, local?.m_position?.z);
-  const radarSrc = lower ? radarImage.replace(/radar\.png$/, "radar_lower.png") : radarImage;
+  const lower = isLowerLevel(viewData, local?.m_position?.z);
+  const radarSrc = radarImage.replace(/radar\.png$/, lower ? "radar_lower.png" : view.image);
 
   const zoom = Math.max(1, settings?.zoom ?? 1);
   const follow = settings?.followMe ?? false;
-  const me = follow ? playerArray.find((p) => p.m_is_local && !p.m_is_dead) : null;
+  const me = follow ? playerArray.find((p) => p.m_is_local && !p.m_is_dead && shown(p.m_position)) : null;
   const w = imgEl?.offsetWidth ?? 0;
   const h = imgEl?.offsetHeight ?? 0;
 
@@ -49,8 +57,8 @@ const Radar = ({
   // following. Clamped so the map edge never leaves the frame.
   let tx = (w - w * zoom) / 2;
   let ty = (h - h * zoom) / 2;
-  if (me && w > 0 && mapData) {
-    const pos = getRadarPosition(mapData, me.m_position);
+  if (me && w > 0 && viewData) {
+    const pos = getRadarPosition(viewData, me.m_position);
     tx = w / 2 - pos.x * w * zoom;
     ty = h / 2 - pos.y * h * zoom;
   }
@@ -75,23 +83,26 @@ const Radar = ({
         enabled={settings?.showCallouts ?? true}
       />
 
-      {playerArray.map((player) => (
+      {/* Keyed by arena: a new one starts fresh instead of reusing death spots
+          or sliding dots across from the old coordinates. */}
+      {playerArray.filter((player) => shown(player.m_position)).map((player) => (
         <Player
-          key={player.m_idx}
+          key={`${roomKey}:${player.m_idx}`}
           playerData={player}
-          mapData={mapData}
+          mapData={viewData}
           radarImage={radarImageEl}
           localTeam={localTeam}
           averageLatency={averageLatency}
           settings={settings}
-          heightMarker={getHeightRelation(mapData, player, local, settings?.heightMarkerThreshold ?? 48)}
+          heightMarker={getHeightRelation(viewData, player, local, settings?.heightMarkerThreshold ?? 48)}
         />
       ))}
 
-      {bombData && bombData.x !== undefined && (
+      {bombData && bombData.x !== undefined && shown(bombData) && (
         <Bomb
+          key={roomKey}
           bombData={bombData}
-          mapData={mapData}
+          mapData={viewData}
           radarImage={radarImageEl}
           localTeam={localTeam}
           averageLatency={averageLatency}
@@ -100,15 +111,15 @@ const Radar = ({
       )}
 
       <GrenadeLayer
-        grenades={grenades}
-        mapData={mapData}
+        grenades={grenades?.filter(shown)}
+        mapData={viewData}
         radarImage={radarImageEl}
         settings={settings}
       />
 
       <DroppedItemLayer
-        items={dropped}
-        mapData={mapData}
+        items={dropped?.filter(shown)}
+        mapData={viewData}
         radarImage={radarImageEl}
         settings={settings}
       />

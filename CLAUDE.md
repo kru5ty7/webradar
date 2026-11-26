@@ -46,6 +46,8 @@ Entry: `webapp/src/app.jsx`
 - `callouts.json` — named area coordinates for the callout overlay layer
 - `radar_lower.png` + `"lowerBelow": <z>` in `data.json` — optional second level for stacked maps (nuke, vertigo). `Radar` shows the lower image while the local player's z is below the cutoff; the height marker also treats a different level as above/below. Values come from the `verticalsections` in the game's `resource/overviews/<map>.txt`; the lower image is `<map>_lower_radar_psd.vtex_c` (LZ4-compressed BGRA8888, 1024x1024 — swap R and B when decoding).
 
+- `"rooms": [...]` in `data.json` — optional, for maps made of separate arenas (`rush_001`). Each entry has `name`, its own `x`/`y`/`scale`, world-space `bounds` of the drawn floor and an image `radar_<name>.png`; `radar.png` is the whole map, used when no player is in a room. `utilities/rooms.js` picks the room (yours while alive, else the one with most players) and `Radar` hides everything off its image. Players can stand off the drawn floor (a lot of `room204`), so membership goes by the 1024 px image square, and `bounds` only breaks ties where squares overlap. Values come from the `Volumes` block of `resource/overviews/rush_001.txt`, images from `rush_001_<name>_radar_tga.vtex_c`. The DXT5 ones are YCoCg encoded (R=Co, G=Cg, B=scale, A=luma) and one is 1025 px tall; the helper's runtime extractor handles neither, nor `rooms`, so this data has to be bundled.
+
 **Radar coordinate conversion**: world (x, y) → radar pixel = `(worldCoord - mapOrigin) / scale`. Both `Player` and `Bomb` components implement this.
 
 **Component structure**:
